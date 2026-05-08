@@ -1,0 +1,29 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(ssh -p 26083 -i /home/thinh/AI_server/server/deploy_key -o IdentitiesOnly=yes -o UserKnownHostsFile=/home/thinh/AI_server/server/known_hosts -o BatchMode=yes root@89.221.67.144 'bash -s')",
+      "Bash(python3 -c ' *)",
+      "Bash(rsync -avz --checksum -e 'ssh -p 26083 -i /home/thinh/AI_server/server/deploy_key -o IdentitiesOnly=yes -o UserKnownHostsFile=/home/thinh/AI_server/server/known_hosts' /home/thinh/AI_server/api/main.py root@89.221.67.144:/workspace/vbk-ai-server/api/)",
+      "Bash(rsync -avz --checksum -e 'ssh -p 26083 -i /home/thinh/AI_server/server/deploy_key -o IdentitiesOnly=yes -o UserKnownHostsFile=/home/thinh/AI_server/server/known_hosts' /home/thinh/AI_server/api/models/schemas.py root@89.221.67.144:/workspace/vbk-ai-server/api/models/)",
+      "Bash(rsync -avz --checksum -e 'ssh -p 26083 -i /home/thinh/AI_server/server/deploy_key -o IdentitiesOnly=yes -o UserKnownHostsFile=/home/thinh/AI_server/server/known_hosts' /home/thinh/AI_server/api/services/translator.py root@89.221.67.144:/workspace/vbk-ai-server/api/services/)",
+      "Bash(rsync -avz --checksum -e 'ssh -p 26083 -i /home/thinh/AI_server/server/deploy_key -o IdentitiesOnly=yes -o UserKnownHostsFile=/home/thinh/AI_server/server/known_hosts' /home/thinh/AI_server/api/routers/translate.py root@89.221.67.144:/workspace/vbk-ai-server/api/routers/)",
+      "Bash(rsync -avz --checksum -e 'ssh -p 26083 -i /home/thinh/AI_server/server/deploy_key -o IdentitiesOnly=yes -o UserKnownHostsFile=/home/thinh/AI_server/server/known_hosts' /home/thinh/AI_server/api/main.py /home/thinh/AI_server/api/models/schemas.py /home/thinh/AI_server/api/services/dictionary.py /home/thinh/AI_server/api/routers/dict.py root@89.221.67.144:/tmp/sync-stage/)",
+      "Bash(rsync -avz --checksum -e 'ssh -p 26083 -i /home/thinh/AI_server/server/deploy_key -o IdentitiesOnly=yes -o UserKnownHostsFile=/home/thinh/AI_server/server/known_hosts' /home/thinh/AI_server/api/services/dictionary.py root@89.221.67.144:/workspace/vbk-ai-server/api/services/)",
+      "Bash(rsync -avz --checksum -e 'ssh -p 26083 -i /home/thinh/AI_server/server/deploy_key -o IdentitiesOnly=yes -o UserKnownHostsFile=/home/thinh/AI_server/server/known_hosts' /home/thinh/AI_server/api/routers/dict.py root@89.221.67.144:/workspace/vbk-ai-server/api/routers/)",
+      "Bash(rsync -avz --checksum -e 'ssh -p 26083 -i /home/thinh/AI_server/server/deploy_key -o IdentitiesOnly=yes -o UserKnownHostsFile=/home/thinh/AI_server/server/known_hosts' /home/thinh/AI_server/api/services/ocr.py root@89.221.67.144:/workspace/vbk-ai-server/api/services/)",
+      "Bash(rsync -avz --checksum -e 'ssh -p 26083 -i /home/thinh/AI_server/server/deploy_key -o IdentitiesOnly=yes -o UserKnownHostsFile=/home/thinh/AI_server/server/known_hosts' /home/thinh/AI_server/api/routers/ocr.py root@89.221.67.144:/workspace/vbk-ai-server/api/routers/)",
+      "Read(//home/thinh/.claude/vietbyte/**)",
+      "Read(//home/thinh/.claude/memory/**)",
+      "Bash(ls -la ~/.ssh/ 2>/dev/null | head -30)",
+      "Read(//home/thinh/.ssh/**)",
+      "Bash(ssh -p 61238 -o StrictHostKeyChecking=accept-new -o ConnectTimeout=10 -o BatchMode=yes root@38.79.155.163 \"echo OK_CONNECTED && hostname && uname -a && uptime\")",
+      "Bash(find /home/thinh -maxdepth 4 -type f \\\\\\( -name \"id_*\" -o -name \"*.pem\" -o -name \"*vast*\" \\\\\\) 2>/dev/null | grep -v \".cache\\\\|.local\\\\|node_modules\" | head -20)",
+      "Read(//home/thinh/**)",
+      "Bash(ssh -p 61238 -i /home/thinh/AI_server/server/deploy_key -o IdentitiesOnly=yes -o UserKnownHostsFile=/home/thinh/AI_server/server/known_hosts -o StrictHostKeyChecking=accept-new -o ConnectTimeout=10 root@38.79.155.163 \"echo OK_CONNECTED && hostname && uname -a && uptime && nvidia-smi --query-gpu=name,memory.total --format=csv,noheader 2>/dev/null || echo 'no gpu'\")",
+      "Bash(ssh -p 61238 -i /home/thinh/AI_server/server/deploy_key -o IdentitiesOnly=yes -o UserKnownHostsFile=/home/thinh/AI_server/server/known_hosts root@38.79.155.163 \"ss -tlnp 2>/dev/null | grep -E ':8080|:9000|:8000' ; echo '---' ; ls /workspace/ 2>/dev/null ; echo '---' ; ps aux | grep -iE 'jupyter|vllm|python' | grep -v grep | head -10\")",
+      "Bash(ssh-keyscan -p 61238 -t ed25519,rsa,ecdsa 38.79.155.163)",
+      "Bash(REMOTE_HOST=38.79.155.163 REMOTE_PORT=61238 bash scripts/sync_to_server.sh)",
+      "Bash(ssh -p 61238 -i /home/thinh/AI_server/server/deploy_key -o IdentitiesOnly=yes -o UserKnownHostsFile=/home/thinh/AI_server/server/known_hosts root@38.79.155.163 \"ls -la /workspace/vbk-ai-server/ | head -20 && echo '---' && du -sh /workspace/vbk-ai-server\")"
+    ]
+  }
+}

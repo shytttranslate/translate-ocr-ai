@@ -1,7 +1,7 @@
 [project]
 name = "tech-vietbyte-ai-api"
-version = "0.1.0"
-description = "VietByte unified OCR + Translation API"
+version = "0.2.0"
+description = "VietByte AI API: Translation + Dictionary + OCR"
 requires-python = ">=3.11"
 
 [tool.ruff]

@@ -1,8 +1,4 @@
-"""Async client tới vLLM server (OpenAI-compatible).
-
-Mỗi vLLM upstream có pool kết nối riêng để tránh head-of-line blocking giữa 2 model
-(theo phản biện #15 Backend Architect).
-"""
+"""Async client tới vLLM server (OpenAI-compatible)."""
 from __future__ import annotations
 
 import asyncio
@@ -18,13 +14,15 @@ log = get_logger(__name__)
 
 @dataclass
 class VllmEndpoint:
-    name: str  # "translator" | "ocr"
+    name: str
     base_url: str
     served_model_name: str
     connect_timeout_s: float = 3.0
     request_timeout_s: float = 60.0
-    pool_max_keepalive: int = 20
-    pool_max_connections: int = 50
+    # Pool 100 connection per worker đủ cho 100 req/s (với 10 worker → 1000 connection total).
+    # Mỗi worker process có pool riêng, HTTP/1.1 keepalive reuse connection giữa request.
+    pool_max_keepalive: int = 50
+    pool_max_connections: int = 100
 
     _client: httpx.AsyncClient | None = field(default=None, init=False, repr=False)
     _model_fingerprint: str | None = field(default=None, init=False, repr=False)
@@ -36,7 +34,7 @@ class VllmEndpoint:
             connect=self.connect_timeout_s,
             read=self.request_timeout_s,
             write=5.0,
-            pool=2.0,
+            pool=30.0,  # đợi pool slot lâu hơn để không 502 khi nhiều concurrent
         )
         limits = httpx.Limits(
             max_keepalive_connections=self.pool_max_keepalive,
@@ -72,11 +70,7 @@ class VllmEndpoint:
         return resp.json()
 
     async def deep_health_check(self) -> dict[str, Any]:
-        """Verify model thật sự ready bằng inference call tối thiểu.
-
-        Theo #27 SRE: container up != model ready. Phải gọi /v1/chat/completions
-        thật để xác nhận weight đã load và inference path hoạt động.
-        """
+        """Verify model thật sự ready bằng inference call tối thiểu."""
         payload = {
             "model": self.served_model_name,
             "messages": [{"role": "user", "content": "ping"}],
@@ -90,10 +84,7 @@ class VllmEndpoint:
             return {"ok": False, "error": str(exc)[:200]}
 
     async def get_model_fingerprint(self) -> str:
-        """Trả về fingerprint duy nhất cho cache key (theo phản biện #19 + ViSa).
-
-        Format: <served_name>-<8 hex char of model id hash>.
-        """
+        """Trả về fingerprint duy nhất: <served_name>-<8 hex>."""
         if self._model_fingerprint is not None:
             return self._model_fingerprint
         try:
@@ -111,24 +102,16 @@ class VllmEndpoint:
 
 
 class VllmRegistry:
-    """Quản lý các vLLM endpoint trong toàn app.
+    """Quản lý các vLLM endpoint trong toàn app. Hiện chỉ có translator."""
 
-    Translator và OCR có pool riêng để tránh head-of-line blocking khi 1 model chậm.
-    """
-
-    def __init__(self, translator: VllmEndpoint, ocr: VllmEndpoint) -> None:
+    def __init__(self, translator: VllmEndpoint) -> None:
         self.translator = translator
-        self.ocr = ocr
 
     async def start_all(self) -> None:
-        await asyncio.gather(self.translator.start(), self.ocr.start())
+        await self.translator.start()
 
     async def stop_all(self) -> None:
-        await asyncio.gather(self.translator.stop(), self.ocr.stop())
+        await self.translator.stop()
 
     async def deep_health_check(self) -> dict[str, Any]:
-        translator_health, ocr_health = await asyncio.gather(
-            self.translator.deep_health_check(),
-            self.ocr.deep_health_check(),
-        )
-        return {"translator": translator_health, "ocr": ocr_health}
+        return {"translator": await self.translator.deep_health_check()}

@@ -1,0 +1,8 @@
+# Dependencies cho vLLM process — cài vào .venv-vllm.
+# vLLM kéo theo torch + CUDA wheel ~10GB, tách khỏi venv API để tránh bloat.
+#
+# Server mới: driver 580 (CUDA 13 ready) → vLLM bản mới nhất tương thích.
+# Pin lower bound để chắc Qwen3 + tokenizer attributes có sẵn.
+vllm>=0.10.0
+transformers>=4.51.0
+tokenizers>=0.21.0
