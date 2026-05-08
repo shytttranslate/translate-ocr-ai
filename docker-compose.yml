@@ -1,0 +1,178 @@
+services:
+  vllm-translator:
+    image: vllm/vllm-openai:v0.6.4.post1
+    runtime: nvidia
+    container_name: vbk-vllm-translator
+    command: >
+      --model Qwen/Qwen2.5-14B-Instruct
+      --quantization fp8
+      --kv-cache-dtype fp8
+      --max-model-len 4096
+      --max-num-seqs 64
+      --gpu-memory-utilization 0.35
+      --enable-prefix-caching
+      --served-model-name translator
+      --port 8001
+      --host 0.0.0.0
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    environment:
+      - HF_TOKEN=${HF_TOKEN}
+      - PYTORCH_CUDA_ALLOC_CONF=expandable_segments:False,max_split_size_mb:512
+    volumes:
+      - hf-cache:/root/.cache/huggingface
+    expose:
+      - "8001"
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:8001/health || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 180s
+    networks:
+      - vbk-internal
+
+  vllm-ocr:
+    image: vllm/vllm-openai:v0.6.4.post1
+    runtime: nvidia
+    container_name: vbk-vllm-ocr
+    command: >
+      --model Qwen/Qwen2.5-VL-7B-Instruct
+      --dtype bfloat16
+      --max-model-len 8192
+      --max-num-seqs 16
+      --gpu-memory-utilization 0.35
+      --enable-prefix-caching
+      --served-model-name ocr
+      --limit-mm-per-prompt image=4
+      --port 8002
+      --host 0.0.0.0
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    environment:
+      - HF_TOKEN=${HF_TOKEN}
+      - PYTORCH_CUDA_ALLOC_CONF=expandable_segments:False,max_split_size_mb:512
+    volumes:
+      - hf-cache:/root/.cache/huggingface
+    expose:
+      - "8002"
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:8002/health || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 180s
+    depends_on:
+      vllm-translator:
+        condition: service_healthy
+    networks:
+      - vbk-internal
+
+  redis:
+    image: redis:7-alpine
+    container_name: vbk-redis
+    command: >
+      redis-server
+      --maxmemory 6gb
+      --maxmemory-policy allkeys-lfu
+      --save 900 1
+      --appendonly yes
+      --appendfsync everysec
+    volumes:
+      - redis-data:/data
+    expose:
+      - "6379"
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+    networks:
+      - vbk-internal
+
+  api:
+    build:
+      context: ./api
+      dockerfile: Dockerfile
+    container_name: vbk-api
+    depends_on:
+      redis:
+        condition: service_healthy
+      vllm-translator:
+        condition: service_healthy
+      vllm-ocr:
+        condition: service_healthy
+    environment:
+      - APP_ENV=${APP_ENV:-dev}
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+      - VLLM_TRANSLATOR_URL=http://vllm-translator:8001
+      - VLLM_OCR_URL=http://vllm-ocr:8002
+      - VLLM_TRANSLATOR_MODEL=translator
+      - VLLM_OCR_MODEL=ocr
+      - REDIS_URL=redis://redis:6379/0
+      - REDIS_RATELIMIT_URL=redis://redis:6379/1
+      - API_KEY_PEPPER=${API_KEY_PEPPER}
+      - DEV_API_KEY=${DEV_API_KEY:-vbk_live_dev_seed_key_for_local_only_xyz}
+    ports:
+      - "8000:8000"
+    restart: unless-stopped
+    read_only: false
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    networks:
+      - vbk-internal
+      - vbk-public
+
+  prometheus:
+    image: prom/prometheus:v2.55.1
+    container_name: vbk-prometheus
+    volumes:
+      - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus-data:/prometheus
+    ports:
+      - "9090:9090"
+    restart: unless-stopped
+    networks:
+      - vbk-internal
+
+  grafana:
+    image: grafana/grafana:11.3.0
+    container_name: vbk-grafana
+    environment:
+      - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_PASSWORD:-admin}
+      - GF_USERS_ALLOW_SIGN_UP=false
+    volumes:
+      - grafana-data:/var/lib/grafana
+    ports:
+      - "3000:3000"
+    restart: unless-stopped
+    networks:
+      - vbk-internal
+
+networks:
+  vbk-internal:
+    driver: bridge
+    internal: false
+  vbk-public:
+    driver: bridge
+
+volumes:
+  hf-cache:
+  redis-data:
+  prometheus-data:
+  grafana-data:

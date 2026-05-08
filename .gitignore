@@ -1,0 +1,12 @@
+.env
+.env.local
+*.pyc
+__pycache__/
+.venv/
+venv/
+.mypy_cache/
+.ruff_cache/
+.pytest_cache/
+*.log
+data/glossaries/*.json
+!data/glossaries/.gitkeep
