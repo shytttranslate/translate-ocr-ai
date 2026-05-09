@@ -533,124 +533,191 @@ class OcrEngine:
         osd_conf: float,
         fallback_lang: str,
     ) -> str:
-        """Refine `detected_lang` dựa Unicode range của text đã recognize.
+        """Refine `detected_lang` dựa **majority script** trong text đã recognize.
 
-        Recognition output là source-of-truth tin cậy hơn OSD pre-step:
-            - Hiragana / katakana → "japan".
-            - CJK ideographs (no kana) → "ch" / "chinese_cht" tùy OSD signal.
-            - Cyrillic / Korean / Arabic / Thai / Devanagari / Greek / Tamil
-              → lang tương ứng (PaddleOCR group đó).
-            - Latin extended (U+0080–U+024F) → "vi" (cover 47 lang Latin có dấu).
-            - Pure ASCII letter → "en".
-            - Không có signal nào → giữ `fallback_lang` (lang đã dùng để recognize).
+        Đếm số ký tự thuộc mỗi Unicode script và pick script chiếm nhiều nhất:
+        cover được mixed-language (vd ảnh có "跳过" + "Loại bỏ các lá bài..." →
+        Latin chiếm 95% ký tự → "vi", không bị chi phối bởi vài char CJK).
+
+        Tie-break:
+        - Có hiragana/katakana > 0 → "japan" (kana là bằng chứng JP rõ ràng).
+        - CJK ideographs majority + OSD HanT → "chinese_cht".
+        - Latin extended có dấu → "vi"; pure ASCII → "en".
         """
         text = "".join(b.text for b in blocks)
         if not text:
             return fallback_lang
 
-        has_hiragana = False
-        has_katakana = False
-        has_cjk = False
-        has_korean = False
-        has_cyrillic = False
-        has_arabic = False
-        has_thai = False
-        has_devanagari = False
-        has_greek = False
-        has_tamil = False
-        has_telugu = False
-        has_latin_ext = False
-        has_ascii_letter = False
-
+        # Counter cho từng script — chỉ đếm ký tự "có nội dung" (alpha/CJK), bỏ qua
+        # digit / punctuation / whitespace để không nhiễu vote.
+        counts: dict[str, int] = {
+            "kana": 0,
+            "cjk": 0,
+            "korean": 0,
+            "cyrillic": 0,
+            "arabic": 0,
+            "devanagari": 0,
+            "thai": 0,
+            "greek": 0,
+            "tamil": 0,
+            "telugu": 0,
+            "latin_ext": 0,
+            "ascii_letter": 0,
+        }
         for c in text:
             cp = ord(c)
             if cp < 0x80:
                 if c.isalpha():
-                    has_ascii_letter = True
+                    counts["ascii_letter"] += 1
             elif 0x0080 <= cp <= 0x024F:
-                has_latin_ext = True
+                counts["latin_ext"] += 1
             elif 0x0370 <= cp <= 0x03FF:
-                has_greek = True
+                counts["greek"] += 1
             elif 0x0400 <= cp <= 0x04FF:
-                has_cyrillic = True
+                counts["cyrillic"] += 1
             elif 0x0600 <= cp <= 0x06FF or 0x0750 <= cp <= 0x077F:
-                has_arabic = True
+                counts["arabic"] += 1
             elif 0x0900 <= cp <= 0x097F:
-                has_devanagari = True
+                counts["devanagari"] += 1
             elif 0x0B80 <= cp <= 0x0BFF:
-                has_tamil = True
+                counts["tamil"] += 1
             elif 0x0C00 <= cp <= 0x0C7F:
-                has_telugu = True
+                counts["telugu"] += 1
             elif 0x0E00 <= cp <= 0x0E7F:
-                has_thai = True
-            elif 0x3040 <= cp <= 0x309F:
-                has_hiragana = True
-            elif 0x30A0 <= cp <= 0x30FF:
-                has_katakana = True
+                counts["thai"] += 1
+            elif (0x3040 <= cp <= 0x309F) or (0x30A0 <= cp <= 0x30FF):
+                counts["kana"] += 1
             elif (0x4E00 <= cp <= 0x9FFF) or (0x3400 <= cp <= 0x4DBF):
-                has_cjk = True
+                counts["cjk"] += 1
             elif 0xAC00 <= cp <= 0xD7AF:
-                has_korean = True
+                counts["korean"] += 1
 
-        # CJK family disambiguation (kana > kanji-only > traditional > simplified)
-        if has_hiragana or has_katakana:
+        total = sum(counts.values())
+        if total == 0:
+            return fallback_lang
+
+        # Đặc trị: kana > 0 luôn = japan (kana không xuất hiện trong language nào khác).
+        if counts["kana"] > 0:
             return "japan"
-        if has_cjk:
+
+        # Pick script majority — gộp `latin_ext` + `ascii_letter` thành 1 nhóm Latin.
+        latin_total = counts["latin_ext"] + counts["ascii_letter"]
+        script_scores: dict[str, int] = {
+            "cjk": counts["cjk"],
+            "korean": counts["korean"],
+            "cyrillic": counts["cyrillic"],
+            "arabic": counts["arabic"],
+            "devanagari": counts["devanagari"],
+            "thai": counts["thai"],
+            "greek": counts["greek"],
+            "tamil": counts["tamil"],
+            "telugu": counts["telugu"],
+            "latin": latin_total,
+        }
+        winner = max(script_scores, key=lambda k: script_scores[k])
+        if script_scores[winner] == 0:
+            return fallback_lang
+
+        if winner == "cjk":
             if osd_script in _HANT_OSD_SCRIPTS:
                 return "chinese_cht"
             if osd_script in ("Japanese", "Japanese_vert") and osd_conf >= 2.5:
                 return "japan"
             return "ch"
+        if winner == "latin":
+            # Latin extended (có dấu) → vi (model latin cover 47 lang); pure ASCII → en
+            return "vi" if counts["latin_ext"] > 0 else "en"
+        return {
+            "korean": "korean",
+            "cyrillic": "ru",
+            "arabic": "ar",
+            "devanagari": "hi",
+            "thai": "th",
+            "greek": "el",
+            "tamil": "ta",
+            "telugu": "te",
+        }.get(winner, fallback_lang)
 
-        # Non-CJK scripts (priority: korean > cyrillic > arabic > devanagari > thai
-        # > greek > tamil > telugu — chữ "đặc thù" trước Latin để tránh nhiễu).
-        if has_korean:
-            return "korean"
-        if has_cyrillic:
-            return "ru"
-        if has_arabic:
-            return "ar"
-        if has_devanagari:
-            return "hi"
-        if has_thai:
-            return "th"
-        if has_greek:
-            return "el"
-        if has_tamil:
-            return "ta"
-        if has_telugu:
-            return "te"
+    @staticmethod
+    def _bbox_iou(b1: list[list[int]], b2: list[list[int]]) -> float:
+        """IoU giữa 2 bbox 4-corner (axis-aligned approximation)."""
+        x1a = min(p[0] for p in b1); x2a = max(p[0] for p in b1)
+        y1a = min(p[1] for p in b1); y2a = max(p[1] for p in b1)
+        x1b = min(p[0] for p in b2); x2b = max(p[0] for p in b2)
+        y1b = min(p[1] for p in b2); y2b = max(p[1] for p in b2)
+        ix1 = max(x1a, x1b); ix2 = min(x2a, x2b)
+        iy1 = max(y1a, y1b); iy2 = min(y2a, y2b)
+        iw = max(0, ix2 - ix1); ih = max(0, iy2 - iy1)
+        inter = iw * ih
+        if inter == 0:
+            return 0.0
+        area_a = max(0, x2a - x1a) * max(0, y2a - y1a)
+        area_b = max(0, x2b - x1b) * max(0, y2b - y1b)
+        union = area_a + area_b - inter
+        return inter / union if union > 0 else 0.0
 
-        # Latin family: có dấu mở rộng → vi (latin model 47 lang); pure ASCII → en
-        if has_latin_ext:
-            return "vi"
-        if has_ascii_letter:
-            return "en"
+    @classmethod
+    def _merge_per_block(
+        cls,
+        passes: list[tuple[list[OcrLine], str]],
+        iou_threshold: float = 0.5,
+    ) -> list[OcrLine]:
+        """Merge nhiều pass recognition: per-bbox pick block conf cao nhất.
 
-        return fallback_lang
+        Args:
+            passes: list of (blocks, lang_label). Mỗi pass có thể detect ra số block khác
+                    nhau dù cùng detection model — merge bằng IoU matching.
+            iou_threshold: 2 bbox có IoU >= ngưỡng → cùng region → merge winner.
+        """
+        # Flatten với source pass index
+        all_items: list[tuple[int, OcrLine]] = []
+        for idx, (blocks, _lang) in enumerate(passes):
+            for b in blocks:
+                all_items.append((idx, b))
+
+        used = [False] * len(all_items)
+        merged: list[OcrLine] = []
+        for i in range(len(all_items)):
+            if used[i]:
+                continue
+            _, base = all_items[i]
+            group: list[tuple[int, OcrLine]] = [all_items[i]]
+            used[i] = True
+            for j in range(i + 1, len(all_items)):
+                if used[j]:
+                    continue
+                _, other = all_items[j]
+                if cls._bbox_iou(base.bbox, other.bbox) >= iou_threshold:
+                    group.append(all_items[j])
+                    used[j] = True
+            # Pick winner = max(confidence × len(text)) — penalize block ngắn rác
+            winner_pass_idx, winner_block = max(
+                group,
+                key=lambda x: x[1].confidence * max(1, len(x[1].text)),
+            )
+            merged.append(winner_block)
+        return merged
 
     async def ocr_auto(
         self, image_bytes: bytes, return_word_box: bool = False,
     ) -> tuple[list[OcrLine], int, int, str]:
-        """Auto-detect lang via Tesseract OSD on full (resized) image.
+        """Auto-detect lang via Tesseract OSD + multi-lang pass per-bbox merge.
 
         Pipeline:
-            1. Decode + resize ảnh (re-use logic chung với recognition path).
-            2. Tesseract OSD trên ảnh đã resize → (script, conf).
-            3. Map script → PaddleOCR lang nếu conf đạt threshold.
-            4. Recognition full với lang đã chọn.
-            5. CJK refinement: nếu OSD trả Han/Japanese, dùng Unicode range của
-               recognition output để chốt detected_lang chính xác (ch vs japan).
+            1. Decode + resize ảnh.
+            2. Tesseract OSD → (script, conf) trên ảnh đã resize.
+            3. Map script → PaddleOCR lang chính.
+            4. Nếu lang chính ≠ vi (Latin) → chạy thêm pass `vi` song song để cover
+               mixed Latin (UI label, hướng dẫn tiếng Việt/Anh trong app non-Latin).
+               Merge per-bbox: IoU >= 0.5 → pick block có conf × len(text) cao nhất.
+            5. Refine detected_lang dựa Unicode range của text merged (CJK/Latin/...).
 
         Fallback ladder:
-            - Tesseract unavailable / OSD throw error → default `ch`.
-            - script_conf < 1.5 → default `ch`.
-            - Script không có trong PaddleOCR coverage (Hebrew, Bengali, ...) → default `ch`.
-            - Recognition lang chọn lỗi → retry với `ch`.
+            - Tesseract unavailable / OSD throw error → default `ch` + pass `vi`.
+            - script_conf < 1.5 → default `ch` + pass `vi`.
+            - Script không có trong PaddleOCR coverage (Hebrew, ...) → default `ch` + `vi`.
+            - Recognition fail trên bất kỳ pass nào → loại pass đó, dùng pass còn lại.
         """
-        # Decode + resize 1 lần (reuse cho cả OSD và recognition pass dưới).
-        # Pass `return_word_box` để dùng pixel cap thấp hơn — đảm bảo recognition
-        # bên dưới không phải resize lại lần nữa.
         bgr, width, height, _scale = await asyncio.to_thread(
             self._decode_image, image_bytes, return_word_box,
         )
@@ -680,26 +747,40 @@ class OcrEngine:
         else:
             log.info("auto_osd_unavailable → fallback %s", AUTO_DEFAULT_LANG)
 
-        try:
-            blocks, _, _ = await self.ocr(image_bytes, chosen_lang, return_word_box)
-        except Exception as exc:  # noqa: BLE001
-            log.warning(
-                "auto_recognition_failed lang=%s error=%s → retry ch",
-                chosen_lang, exc,
-            )
-            if chosen_lang != AUTO_DEFAULT_LANG:
-                blocks, _, _ = await self.ocr(image_bytes, AUTO_DEFAULT_LANG, return_word_box)
-                chosen_lang = AUTO_DEFAULT_LANG
-            else:
-                raise
+        # Multi-lang pass: lang chính + `vi` (Latin) khi script chính không phải Latin.
+        # Tránh duplicate khi chosen_lang đã là `vi` (OSD trả Latin) hoặc Latin-related.
+        candidate_langs = [chosen_lang]
+        if chosen_lang != "vi":
+            candidate_langs.append("vi")
 
-        # Refine detected_lang dựa Unicode range của text recognized — source of truth
-        # tin cậy hơn OSD pre-step. Cover toàn bộ case:
-        #   - CJK confusion (Han↔Japanese)
-        #   - OSD low-conf fallback `ch` nhưng text thực tế là English / Cyrillic / ...
-        #   - OSD trả Latin → chosen_lang `vi`, nhưng text pure ASCII → "en"
+        async def _safe_ocr(lang: str) -> list[OcrLine]:
+            try:
+                blocks, _, _ = await self.ocr(image_bytes, lang, return_word_box)
+                return blocks
+            except Exception as exc:  # noqa: BLE001
+                log.warning("auto_pass_failed lang=%s error=%s", lang, exc)
+                return []
+
+        results = await asyncio.gather(*(_safe_ocr(l) for l in candidate_langs))
+        passes = [(blocks, lang) for blocks, lang in zip(results, candidate_langs) if blocks]
+
+        if not passes:
+            # Tất cả pass đều fail — last-resort retry sync với default
+            blocks, _, _ = await self.ocr(image_bytes, AUTO_DEFAULT_LANG, return_word_box)
+            return blocks, width, height, AUTO_DEFAULT_LANG
+
+        if len(passes) == 1:
+            merged_blocks = passes[0][0]
+        else:
+            merged_blocks = self._merge_per_block(passes, iou_threshold=0.5)
+            log.info(
+                "auto_multilang_merged langs=%s n_passes_ok=%d → %d blocks",
+                [l for _, l in passes], len(passes), len(merged_blocks),
+            )
+
+        # Refine detected_lang dựa Unicode range của text đã merge
         reported_lang = self._refine_lang_from_text(
-            blocks, chosen_script, osd_conf, chosen_lang,
+            merged_blocks, chosen_script, osd_conf, chosen_lang,
         )
         if reported_lang != chosen_lang:
             log.info(
@@ -707,7 +788,7 @@ class OcrEngine:
                 chosen_script, chosen_lang, reported_lang, osd_conf,
             )
 
-        return blocks, width, height, reported_lang
+        return merged_blocks, width, height, reported_lang
 
     async def warm_up(self, langs: list[str]) -> None:
         for lang in langs:
