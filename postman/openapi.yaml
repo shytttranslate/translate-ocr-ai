@@ -1,0 +1,697 @@
+openapi: 3.0.3
+info:
+  title: VBK OCR API
+  version: 0.3.0
+  description: '**VBK OCR API** — production-grade OCR powered by **PaddleOCR PP-OCRv5** and **manga-ocr** (kha-white) for
+    Japanese comics.
+
+
+    ## Highlights
+
+    - 110 language codes across 12 script families (Latin, CJK, Cyrillic, Arabic, Devanagari, Thai, Greek, Tamil, Telugu,
+    ...).
+
+    - Two pipelines: `general` (PaddleOCR) and `manga` (PaddleOCR detection + manga-ocr recognition + speech-bubble clustering).
+
+    - Always returns the full **ML Kit hierarchy**: blocks (paragraphs) > lines > words, each with confidence and 4-corner
+    bbox.
+
+    - Two ingest modes: JSON (base64 or URL) and multipart upload.
+
+    - Auto language detection with parallel fallback when confidence drops below 0.85.
+
+    - Auto reading-order detection (LTR / RTL) based on script family and page aspect.
+
+
+    ## Quick start
+
+    1. Subscribe on RapidAPI to obtain your `X-RapidAPI-Key`.
+
+    2. `POST /v1/ocr` with `{ "image_url": "https://...", "lang": "auto" }`.
+
+    3. Read `full_text` for the concatenated result, or walk `blocks[].lines[].words[]` for layout.'
+  termsOfService: https://ocr.spacecloud.fit/terms
+  contact:
+    name: VBK OCR Support
+    url: https://ocr.spacecloud.fit
+    email: support@spacecloud.fit
+  license:
+    name: Proprietary
+  x-logo:
+    url: https://ocr.spacecloud.fit/logo.png
+    altText: VBK OCR API
+servers:
+- url: https://ocr.spacecloud.fit
+  description: Production server — direct
+- url: https://vbk-ocr.p.rapidapi.com
+  description: RapidAPI gateway
+tags:
+- name: OCR
+  description: Recognize text from images.
+- name: Languages
+  description: Metadata about supported languages and models.
+- name: Health
+  description: Liveness and readiness probes.
+security:
+- RapidAPIKey: []
+  RapidAPIHost: []
+paths:
+  /v1/languages:
+    get:
+      tags:
+      - Languages
+      operationId: listSupportedLanguages
+      summary: List supported OCR languages
+      description: 'Returns the flat list of every language code accepted by the `lang` field, each with its human-readable
+        label. Convenient for client-side dropdowns / pickers.
+
+
+        Includes the special `auto` alias that triggers language auto-detection.'
+      responses:
+        '200':
+          description: Supported languages catalog.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LanguagesResponse'
+              example:
+                count: 110
+                languages:
+                - code: auto
+                  label: Auto detect
+                - code: en
+                  label: English
+                - code: vi
+                  label: Vietnamese
+                - code: japan
+                  label: Japanese (Hiragana + Katakana + Kanji)
+  /v1/ocr:
+    post:
+      tags:
+      - OCR
+      operationId: recognizeImage
+      summary: Recognize text from a JSON payload
+      description: 'Run OCR against an image supplied either as a base64 string (`image`) or as an HTTP/HTTPS URL (`image_url`).
+        Exactly one of the two fields must be provided.
+
+
+        **Engines**
+
+        - `mode=general` (default): PaddleOCR PP-OCRv5 with detection + recognition +   paragraph clustering. Supports 110
+        language codes.
+
+        - `mode=manga`: specialised pipeline using PaddleOCR for detection and   [manga-ocr](https://github.com/kha-white/manga-ocr)
+        for Japanese recognition,   with speech-bubble clustering and RTL reading order.
+
+
+        **Limits**
+
+        - URL-fetched images: 10 MB max, 15s fetch timeout.
+
+        - Word-level boxes auto-degrade to `[]` for images larger than ~1.5M pixels.'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/OcrRequest'
+            examples:
+              imageUrlAuto:
+                summary: Image URL + auto language
+                description: Most common case — let the server fetch the image and detect the language.
+                value:
+                  image_url: https://upload.wikimedia.org/wikipedia/commons/thumb/0/0a/Newspaper_clipping.png/640px-Newspaper_clipping.png
+                  lang: auto
+              imageUrlManga:
+                summary: Manga mode (Japanese, RTL)
+                description: 'Specialised pipeline: PaddleOCR detection + manga-ocr recognition + speech-bubble clustering.'
+                value:
+                  image_url: https://upload.wikimedia.org/wikipedia/commons/thumb/0/0a/Newspaper_clipping.png/640px-Newspaper_clipping.png
+                  lang: japan
+                  mode: manga
+              imageUrlRtl:
+                summary: Force right-to-left reading order
+                description: Useful for Arabic / Hebrew documents where auto-detection might be ambiguous.
+                value:
+                  image_url: https://upload.wikimedia.org/wikipedia/commons/thumb/0/0a/Newspaper_clipping.png/640px-Newspaper_clipping.png
+                  lang: ar
+                  reading_order: rtl
+              imageBase64:
+                summary: Inline base64 image
+                description: Send the image bytes directly (PNG/JPEG/WebP) base64-encoded. Recommended for private images.
+                value:
+                  image: iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=
+                  lang: en
+      responses:
+        '200': &id001
+          description: OCR succeeded. Response always carries the full ML Kit hierarchy (blocks > lines > words).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OcrResponse'
+              example:
+                request_id: 8a4c2b6e-1f3a-4d2c-9c11-7e58a2d4b6f0
+                processing_time_ms: 612
+                lang: auto
+                detected_lang: en
+                image_width: 640
+                image_height: 480
+                full_text: Hello world
+                blocks:
+                - text: Hello world
+                  bbox:
+                  - x: 10
+                    y: 12
+                  - x: 320
+                    y: 12
+                  - x: 320
+                    y: 48
+                  - x: 10
+                    y: 48
+                  confidence: 0.973
+                  line_count: 1
+                  lines:
+                  - text: Hello world
+                    bbox:
+                    - x: 10
+                      y: 12
+                    - x: 320
+                      y: 12
+                    - x: 320
+                      y: 48
+                    - x: 10
+                      y: 48
+                    confidence: 0.973
+                    words:
+                    - text: Hello
+                      bbox:
+                      - x: 10
+                        y: 12
+                      - x: 140
+                        y: 12
+                      - x: 140
+                        y: 48
+                      - x: 10
+                        y: 48
+                      confidence: 0.973
+                    - text: world
+                      bbox:
+                      - x: 160
+                        y: 12
+                      - x: 320
+                        y: 12
+                      - x: 320
+                        y: 48
+                      - x: 160
+                        y: 48
+                      confidence: 0.973
+                reading_order: ltr
+        '400':
+          description: Bad request — invalid input (e.g. base64 decode failed, empty image, bad URL scheme, unsupported lang).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                detail: 'lang ''xx'' không hợp lệ. Cho phép: [''ar'', ''ch'', ''en'', ...]'
+        '413':
+          description: Payload too large — image exceeds the 10 MB limit (URL fetch or upload).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                detail: File 12582912 bytes vượt giới hạn 10485760
+        '422':
+          description: Validation error — request body failed Pydantic validation (missing/conflicting fields, wrong types).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ValidationError'
+              example:
+                detail:
+                - loc:
+                  - body
+                  msg: 'Phải truyền 1 trong 2: `image` (base64) hoặc `image_url`'
+                  type: value_error
+        '502':
+          description: Upstream OCR engine failed (PaddleOCR or manga-ocr crashed). Safe to retry once.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                detail: 'OCR engine lỗi: CUDA out of memory'
+  /v1/ocr/upload:
+    post:
+      tags:
+      - OCR
+      operationId: uploadAndRecognize
+      summary: Recognize text from a multipart upload
+      description: 'OCR endpoint that accepts a raw image file via `multipart/form-data`. Best for browser drag-and-drop tools,
+        mobile uploads, or `curl -F` scripts where base64 encoding adds unnecessary overhead.
+
+
+        Supports the same `lang`, `reading_order` and `mode` parameters as `POST /v1/ocr`.'
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required:
+              - file
+              properties:
+                file:
+                  type: string
+                  format: binary
+                  description: Image file (PNG / JPEG / WebP). Max 10 MB.
+                lang:
+                  type: string
+                  default: auto
+                  description: Same as the `lang` field of `POST /v1/ocr`. See `GET /v1/languages`.
+                reading_order:
+                  type: string
+                  enum:
+                  - ltr
+                  - rtl
+                  - auto
+                  default: auto
+                mode:
+                  type: string
+                  enum:
+                  - general
+                  - manga
+                  default: general
+                request_id:
+                  type: string
+                  nullable: true
+                  description: Optional trace ID echoed in the response.
+            encoding:
+              file:
+                contentType: image/png, image/jpeg, image/webp
+      responses:
+        '200': *id001
+        '400':
+          description: Bad request — invalid input (e.g. base64 decode failed, empty image, bad URL scheme, unsupported lang).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                detail: 'lang ''xx'' không hợp lệ. Cho phép: [''ar'', ''ch'', ''en'', ...]'
+        '413':
+          description: Payload too large — image exceeds the 10 MB limit (URL fetch or upload).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                detail: File 12582912 bytes vượt giới hạn 10485760
+        '422':
+          description: Validation error — request body failed Pydantic validation (missing/conflicting fields, wrong types).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ValidationError'
+              example:
+                detail:
+                - loc:
+                  - body
+                  msg: 'Phải truyền 1 trong 2: `image` (base64) hoặc `image_url`'
+                  type: value_error
+        '502':
+          description: Upstream OCR engine failed (PaddleOCR or manga-ocr crashed). Safe to retry once.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                detail: 'OCR engine lỗi: CUDA out of memory'
+  /healthz/live:
+    get:
+      tags:
+      - Health
+      operationId: livenessCheck
+      summary: Liveness probe
+      description: Lightweight check that the process is up. Does not exercise the OCR engine.
+      security: []
+      responses:
+        '200':
+          description: Process is alive.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HealthResponse'
+              example:
+                status: ok
+  /healthz/ready:
+    get:
+      tags:
+      - Health
+      operationId: readinessCheck
+      summary: Readiness probe
+      description: Indicates the OCR service has completed its warm-up (`en` model loaded) and can accept traffic.
+      security: []
+      responses:
+        '200':
+          description: Service is ready.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HealthResponse'
+              example:
+                status: ok
+                service: ocr
+components:
+  schemas:
+    BboxPoint:
+      type: object
+      description: Single pixel coordinate within a bbox polygon.
+      required:
+      - x
+      - y
+      properties:
+        x:
+          type: integer
+          description: Horizontal pixel coordinate.
+        y:
+          type: integer
+          description: Vertical pixel coordinate.
+    OcrWord:
+      type: object
+      description: Word-level recognition entry (lowest hierarchy level).
+      required:
+      - text
+      - bbox
+      - confidence
+      properties:
+        text:
+          type: string
+          description: Recognized word text.
+        bbox:
+          type: array
+          description: 4-corner polygon ordered [top-left, top-right, bottom-right, bottom-left]. Each corner is an object
+            `{x, y}` of pixel coordinates.
+          minItems: 4
+          maxItems: 4
+          items:
+            $ref: '#/components/schemas/BboxPoint'
+          example:
+          - x: 10
+            y: 12
+          - x: 320
+            y: 12
+          - x: 320
+            y: 48
+          - x: 10
+            y: 48
+        confidence:
+          type: number
+          format: float
+          minimum: 0.0
+          maximum: 1.0
+          description: Confidence score 0–1 (inherits parent line score).
+    OcrLine:
+      type: object
+      description: Single text line. `words` may be empty when image exceeds 1.5M pixels (PaddleOCR auto-degrades word boxes
+        for memory safety).
+      required:
+      - text
+      - bbox
+      - confidence
+      - words
+      properties:
+        text:
+          type: string
+          description: Recognized line text.
+        bbox:
+          type: array
+          description: 4-corner polygon ordered [top-left, top-right, bottom-right, bottom-left]. Each corner is an object
+            `{x, y}` of pixel coordinates.
+          minItems: 4
+          maxItems: 4
+          items:
+            $ref: '#/components/schemas/BboxPoint'
+          example:
+          - x: 10
+            y: 12
+          - x: 320
+            y: 12
+          - x: 320
+            y: 48
+          - x: 10
+            y: 48
+        confidence:
+          type: number
+          format: float
+          minimum: 0.0
+          maximum: 1.0
+        words:
+          type: array
+          description: Word-level breakdown. May be empty `[]` when word boxes are degraded.
+          items:
+            $ref: '#/components/schemas/OcrWord'
+    OcrBlock:
+      type: object
+      description: Paragraph-level block (ML Kit Block hierarchy). Lines from the same speech bubble or paragraph are merged
+        together.
+      required:
+      - text
+      - bbox
+      - confidence
+      - line_count
+      - lines
+      properties:
+        text:
+          type: string
+          description: Concatenated text of all lines. Separator is `\n` (or empty for vertical manga text).
+        bbox:
+          type: array
+          description: 4-corner polygon ordered [top-left, top-right, bottom-right, bottom-left]. Each corner is an object
+            `{x, y}` of pixel coordinates.
+          minItems: 4
+          maxItems: 4
+          items:
+            $ref: '#/components/schemas/BboxPoint'
+          example:
+          - x: 10
+            y: 12
+          - x: 320
+            y: 12
+          - x: 320
+            y: 48
+          - x: 10
+            y: 48
+        confidence:
+          type: number
+          format: float
+          minimum: 0.0
+          maximum: 1.0
+          description: Average confidence across child lines.
+        line_count:
+          type: integer
+          minimum: 1
+          description: Number of source lines merged into this block.
+        lines:
+          type: array
+          description: Child lines (always populated to mirror Google ML Kit hierarchy).
+          items:
+            $ref: '#/components/schemas/OcrLine'
+    OcrRequest:
+      type: object
+      description: OCR request payload. Exactly **one** of `image` or `image_url` MUST be provided (server returns 422 if
+        both or neither are supplied).
+      additionalProperties: false
+      oneOf:
+      - required:
+        - image
+      - required:
+        - image_url
+      properties:
+        image:
+          type: string
+          format: byte
+          nullable: true
+          description: Base64-encoded image bytes (PNG / JPEG / WebP). Mutually exclusive with `image_url`.
+        image_url:
+          type: string
+          format: uri
+          nullable: true
+          description: HTTP/HTTPS URL of the image. Server fetches it (max 10 MB, 15s timeout). Mutually exclusive with `image`.
+            **Security note:** the server fetches arbitrary URLs server-side; do not pass URLs that resolve to private/internal
+            networks (RFC1918, loopback, link-local, metadata endpoints). Operators should restrict outbound egress accordingly.
+        lang:
+          type: string
+          default: auto
+          description: Language hint. Use `auto` for automatic detection (tries `en` first, then ch / japan / korean / ru
+            / vi / ar / hi / th in parallel if confidence < 0.85). See `GET /v1/languages` for the full list of supported
+            codes.
+          example: auto
+        reading_order:
+          type: string
+          enum:
+          - ltr
+          - rtl
+          - auto
+          default: auto
+          description: Block sort order. `ltr` = left-to-right (default), `rtl` = right-to-left (manga JP, Arabic), `auto`
+            = inferred from CJK character ratio + page aspect.
+        mode:
+          type: string
+          enum:
+          - general
+          - manga
+          default: general
+          description: '`general` (default) = PaddleOCR pipeline for documents/screenshots. `manga` = specialized pipeline
+            for comics: PaddleOCR detection + manga-ocr recognition + speech-bubble clustering + RTL ordering. In manga mode
+            the `lang` and `reading_order` fields are forced to `japan` / `rtl`.'
+        request_id:
+          type: string
+          nullable: true
+          description: Optional client-supplied trace ID. Echoed back in the response. A UUID is generated when omitted.
+    OcrResponse:
+      type: object
+      required:
+      - request_id
+      - processing_time_ms
+      - lang
+      - detected_lang
+      - image_width
+      - image_height
+      - full_text
+      - blocks
+      properties:
+        request_id:
+          type: string
+          description: Echo of request ID (or server-generated UUID).
+        processing_time_ms:
+          type: integer
+          minimum: 0
+          description: Server-side wall-clock duration of the OCR pipeline in milliseconds.
+        lang:
+          type: string
+          description: Language code that was actually requested (echoes the input or `auto`).
+        detected_lang:
+          type: string
+          description: Language code resolved by auto-detect (equals `lang` when an explicit code was supplied).
+        image_width:
+          type: integer
+          minimum: 1
+          description: Decoded image width in pixels.
+        image_height:
+          type: integer
+          minimum: 1
+          description: Decoded image height in pixels.
+        full_text:
+          type: string
+          description: Concatenated text of all blocks in reading order. Blocks separated by `\n\n`.
+        blocks:
+          type: array
+          description: 'ML Kit hierarchy: blocks > lines > words. Always populated. `words` arrays may be empty for very large
+            images.'
+          items:
+            $ref: '#/components/schemas/OcrBlock'
+        reading_order:
+          type: string
+          enum:
+          - ltr
+          - rtl
+          nullable: true
+          description: Reading order actually used to sort blocks (resolved from `auto` if needed).
+    LanguageItem:
+      type: object
+      required:
+      - code
+      - label
+      properties:
+        code:
+          type: string
+          description: Language code accepted by the `lang` field.
+          example: vi
+        label:
+          type: string
+          description: Human-readable name.
+          example: Vietnamese
+    LanguagesResponse:
+      type: object
+      required:
+      - count
+      - languages
+      properties:
+        count:
+          type: integer
+          description: Total number of language codes (including the `auto` alias).
+        languages:
+          type: array
+          description: Flat list of every supported code with its human-readable label.
+          items:
+            $ref: '#/components/schemas/LanguageItem'
+    HealthResponse:
+      type: object
+      required:
+      - status
+      properties:
+        status:
+          type: string
+          enum:
+          - ok
+        service:
+          type: string
+          enum:
+          - ocr
+          description: Present on the readiness endpoint only.
+    ErrorResponse:
+      type: object
+      description: Default FastAPI error envelope.
+      required:
+      - detail
+      properties:
+        detail:
+          type: string
+          description: Human-readable error message.
+    ValidationErrorItem:
+      type: object
+      required:
+      - loc
+      - msg
+      - type
+      properties:
+        loc:
+          type: array
+          items:
+            oneOf:
+            - type: string
+            - type: integer
+          description: JSON pointer to the offending field.
+        msg:
+          type: string
+        type:
+          type: string
+    ValidationError:
+      type: object
+      description: FastAPI 422 validation error envelope.
+      required:
+      - detail
+      properties:
+        detail:
+          type: array
+          items:
+            $ref: '#/components/schemas/ValidationErrorItem'
+  securitySchemes:
+    RapidAPIKey:
+      type: apiKey
+      in: header
+      name: X-RapidAPI-Key
+      description: RapidAPI consumer key (injected automatically by the RapidAPI marketplace).
+    RapidAPIHost:
+      type: apiKey
+      in: header
+      name: X-RapidAPI-Host
+      description: RapidAPI host identifier (injected automatically by the RapidAPI marketplace).
+    RapidAPIProxySecret:
+      type: apiKey
+      in: header
+      name: X-RapidAPI-Proxy-Secret
+      description: Shared secret injected by the RapidAPI proxy and verified by the provider. Configured in the RapidAPI provider
+        dashboard; not exposed to consumers.

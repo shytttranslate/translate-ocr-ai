@@ -712,17 +712,13 @@ async function loadLanguages() {
     const r = await fetch(`${apiUrl}/v1/languages`);
     if (!r.ok) throw new Error(`HTTP ${r.status}`);
     const data = await r.json();
-    while (langSelect.options.length > 1) langSelect.remove(1);
-    for (const grp of data.model_groups || []) {
-      const og = document.createElement("optgroup");
-      og.label = `${grp.label}  (${grp.model})`;
-      for (const lang of grp.languages || []) {
-        const opt = document.createElement("option");
-        opt.value = lang.code;
-        opt.textContent = `${lang.code} — ${lang.label}`;
-        og.appendChild(opt);
-      }
-      langSelect.appendChild(og);
+    // Bỏ option cũ, giữ option đầu (auto được API trả về luôn → render lại từ list)
+    langSelect.innerHTML = "";
+    for (const lang of data.languages || []) {
+      const opt = document.createElement("option");
+      opt.value = lang.code;
+      opt.textContent = `${lang.code} — ${lang.label}`;
+      langSelect.appendChild(opt);
     }
   } catch (err) {
     showError(`Không load /v1/languages từ ${apiUrl}: ${err.message}`);
@@ -903,7 +899,7 @@ function buildLayer(g, items) {
   g.innerHTML = "";
   for (const it of items) {
     if (!it.bbox || it.bbox.length < 4) continue;
-    const points = it.bbox.map((p) => `${p[0]},${p[1]}`).join(" ");
+    const points = it.bbox.map((p) => `${p.x},${p.y}`).join(" ");
     const isLow = viewState.redLowConf && it.confidence < 0.7;
 
     const fill = document.createElementNS("http://www.w3.org/2000/svg", "polygon");
@@ -927,8 +923,8 @@ function buildLayer(g, items) {
 
     // Label (tách group để toggle riêng)
     if (it.text) {
-      const xs = it.bbox.map((p) => p[0]);
-      const ys = it.bbox.map((p) => p[1]);
+      const xs = it.bbox.map((p) => p.x);
+      const ys = it.bbox.map((p) => p.y);
       const xMin = Math.min(...xs);
       const yMin = Math.min(...ys);
       const fontSize = Math.max(11, Math.min(24, Math.round((Math.max(...ys) - yMin) * 0.7)));

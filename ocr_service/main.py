@@ -79,16 +79,22 @@ class OcrRequest(BaseModel):
         return self
 
 
+class BboxPoint(BaseModel):
+    """1 điểm trong polygon bbox — dùng object thay vì array để client dễ đọc."""
+    x: int
+    y: int
+
+
 # ML Kit hierarchy: block > line > word
 class OcrWord(BaseModel):
     text: str
-    bbox: list[list[int]] = Field(description="4-corner polygon [TL, TR, BR, BL]")
+    bbox: list[BboxPoint] = Field(description="4-corner polygon [TL, TR, BR, BL]")
     confidence: float = Field(ge=0.0, le=1.0)
 
 
 class OcrLine(BaseModel):
     text: str
-    bbox: list[list[int]]
+    bbox: list[BboxPoint]
     confidence: float = Field(ge=0.0, le=1.0)
     words: list[OcrWord] = Field(
         default_factory=list,
@@ -99,7 +105,7 @@ class OcrLine(BaseModel):
 class OcrBlock(BaseModel):
     """ML Kit Block = paragraph: gộp các line liền kề / cùng speech bubble."""
     text: str = Field(description="Text gộp từ các line, separator '\\n' (manga vertical: '')")
-    bbox: list[list[int]] = Field(description="Axis-aligned bbox bao quanh block, 4 góc [TL,TR,BR,BL]")
+    bbox: list[BboxPoint] = Field(description="Axis-aligned bbox bao quanh block, 4 góc [TL,TR,BR,BL]")
     confidence: float = Field(ge=0.0, le=1.0, description="Avg confidence của lines trong block")
     line_count: int = Field(ge=1)
     lines: list[OcrLine] = Field(
@@ -110,7 +116,6 @@ class OcrBlock(BaseModel):
 
 class OcrResponse(BaseModel):
     request_id: str
-    service: Literal["ocr"] = "ocr"
     processing_time_ms: int
     lang: str
     detected_lang: str
@@ -393,34 +398,32 @@ LANGUAGE_GROUPS: list[dict[str, object]] = [
 ]
 
 
-def _flatten_languages() -> list[dict[str, object]]:
-    """Flat list cho client cần lookup nhanh code → model."""
-    flat: list[dict[str, object]] = [
-        {"code": "auto", "label": "Auto detect",
-         "note": "Thử 'en' trước, fallback parallel ch/japan/korean/ru/vi/ar/hi/th nếu confidence < 0.85"}
-    ]
+def _flatten_languages() -> list[dict[str, str]]:
+    """Flat list `{code, label}` — đơn giản cho client dropdown / i18n picker."""
+    flat: list[dict[str, str]] = [{"code": "auto", "label": "Auto detect"}]
     for group in LANGUAGE_GROUPS:
         for lang in group["languages"]:  # type: ignore[union-attr]
-            flat.append({**lang, "model": group["model"]})  # type: ignore[arg-type]
+            flat.append({"code": lang["code"], "label": lang["label"]})  # type: ignore[index]
     return flat
 
 
 @app.get("/v1/languages")
 async def list_languages() -> dict[str, object]:
-    """Liệt kê toàn bộ lang code OCR support (109 codes), kèm metadata model.
-
-    Group theo recognition model (10 model + 1 alias auto).
-    Mọi multi-script wrapper đều bao gồm `en` trong character set → có thể nhận
-    diện song ngữ (ngôn ngữ chính + English) mà không cần đổi model.
-    """
+    """Liệt kê toàn bộ lang code OCR support — chỉ trả count + flat list `{code, label}`."""
     flat = _flatten_languages()
     return {
-        "service": "ocr",
-        "engine": "PaddleOCR PP-OCRv5",
         "count": len(flat),
-        "model_groups": LANGUAGE_GROUPS,
         "languages": flat,
     }
+
+
+def _bbox_to_points(bbox: list[list[int]]) -> list[dict[str, int]]:
+    """Convert bbox engine [[x,y], ...] → [{"x":x,"y":y}, ...] cho response API.
+
+    Engine + paragraph_merger nội bộ vẫn dùng list-of-lists để giữ vector ops gọn,
+    chỉ convert ở boundary trước khi serialize qua Pydantic.
+    """
+    return [{"x": int(p[0]), "y": int(p[1])} for p in bbox]
 
 
 def _build_lines_from_engine(blocks: list) -> list[dict]:
@@ -433,12 +436,16 @@ def _build_lines_from_engine(blocks: list) -> list[dict]:
         words_payload: list[dict] = []
         if blk.words:
             words_payload = [
-                {"text": w.text, "bbox": w.bbox, "confidence": blk.confidence}
+                {
+                    "text": w.text,
+                    "bbox": _bbox_to_points(w.bbox),
+                    "confidence": blk.confidence,
+                }
                 for w in blk.words
             ]
         lines.append({
             "text": blk.text,
-            "bbox": blk.bbox,
+            "bbox": _bbox_to_points(blk.bbox),
             "confidence": blk.confidence,
             "words": words_payload,
         })
@@ -483,7 +490,7 @@ def _build_blocks_payload(
         ]
         blocks_payload.append({
             "text": p.text,
-            "bbox": p.bbox,
+            "bbox": _bbox_to_points(p.bbox),
             "confidence": p.avg_confidence,
             "line_count": p.line_count,
             "lines": attached_lines,
@@ -523,7 +530,7 @@ async def _run_manga_ocr(image_bytes: bytes, request_id: str) -> OcrResponse:
         ]
         blocks_payload.append({
             "text": b.text,
-            "bbox": b.bbox,
+            "bbox": _bbox_to_points(b.bbox),
             "confidence": b.avg_confidence,
             "line_count": b.line_count,
             "lines": attached_lines,
