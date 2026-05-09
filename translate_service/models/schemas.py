@@ -122,31 +122,52 @@ class JsonTranslateResponse(BaseModel):
     target_lang: str
 
 
+def _camel(s: str) -> str:
+    """snake_case → camelCase cho JSON alias."""
+    parts = s.split("_")
+    return parts[0] + "".join(p.title() for p in parts[1:])
+
+
+_CAMEL_CFG = ConfigDict(
+    populate_by_name=True,
+    alias_generator=_camel,
+    extra="forbid",
+)
+
+
 class DictRequest(BaseModel):
-    """Tra từ điển: user nhập từ ở native_lang, trả về entry kiểu Cambridge của target_lang."""
-    model_config = ConfigDict(extra="forbid")
+    """Tra từ điển đa ngôn ngữ — phục vụ người học ngoại ngữ.
+
+    User là người nói `native_lang` (mẹ đẻ — vd vi), đang học `target_lang`
+    (ngoại ngữ — vd en). Tra từ ở `target_lang`, nhận giải nghĩa bằng `native_lang`.
+    """
+    model_config = ConfigDict(
+        populate_by_name=True,
+        alias_generator=_camel,
+        extra="forbid",
+    )
 
     word: str = Field(
         min_length=1,
         max_length=200,
-        description="Từ cần tra (ở native_lang). Có thể là phrase ngắn.",
+        description="Từ / cụm từ cần tra (ở target_lang — ngôn ngữ đang học).",
     )
     native_lang: str = Field(
+        default="vi",
         min_length=2,
         max_length=8,
         pattern=LANG_PATTERN,
-        description="Ngôn ngữ mẹ đẻ của user (vd vi, en, ja...).",
+        description="Ngôn ngữ mẹ đẻ của user — output meaning/giải nghĩa ở đây (mặc định vi).",
     )
     target_lang: str = Field(
-        default="en",
         min_length=2,
         max_length=8,
         pattern=LANG_PATTERN,
-        description="Ngôn ngữ học (mặc định en).",
+        description="Ngôn ngữ user đang học — ngôn ngữ của từ user nhập: en, ja, zh, ko, fr...",
     )
 
     @model_validator(mode="after")
-    def _check_word(self) -> DictRequest:
+    def _check_request(self) -> DictRequest:
         if not self.word.strip():
             raise ValueError("word không được rỗng")
         if self.native_lang == "auto" or self.target_lang == "auto":
@@ -156,36 +177,88 @@ class DictRequest(BaseModel):
         return self
 
 
+class DictPhonetic(BaseModel):
+    """Phiên âm — IPA + romanization (cho ngôn ngữ non-Latin)."""
+    model_config = _CAMEL_CFG
+
+    ipa: str | None = Field(
+        default=None,
+        description="IPA chuẩn, vd '/bʊk/' hoặc '/ˈfriː.dəm/'. Null nếu không có.",
+    )
+    romanization: str | None = Field(
+        default=None,
+        description="Romanization cho non-Latin (pinyin, romaji, revised romanization)."
+        " Null cho ngôn ngữ Latin.",
+    )
+
+
 class DictDefinition(BaseModel):
+    """Một nét nghĩa — part of speech + meaning ngắn gọn."""
+    model_config = _CAMEL_CFG
+
     part_of_speech: str = Field(
-        description="noun | verb | adjective | adverb | preposition | conjunction | interjection | phrase",
+        description="noun|verb|adjective|adverb|preposition|conjunction|interjection"
+        "|pronoun|determiner|particle|phrase|idiom",
     )
-    definition_target: str = Field(
-        description="Định nghĩa ở target_lang, kiểu Cambridge — concise và rõ ngữ cảnh",
+    meaning: str = Field(
+        description="Định nghĩa concise ở native_lang (mẹ đẻ).",
     )
-    definition_native: str = Field(
-        description="Bản dịch định nghĩa sang native_lang",
-    )
-    examples: list[str] = Field(
+
+
+class DictExample(BaseModel):
+    """Câu ví dụ hoặc cụm từ + bản dịch."""
+    model_config = _CAMEL_CFG
+
+    text: str = Field(description="Câu / cụm ở target_lang (ngoại ngữ).")
+    meaning: str = Field(description="Bản dịch sang native_lang (mẹ đẻ).")
+
+
+class DictWordRef(BaseModel):
+    """Tham chiếu tới từ khác — synonym/antonym/related word."""
+    model_config = _CAMEL_CFG
+
+    text: str = Field(description="Từ / cụm tham chiếu ở target_lang.")
+    meaning: str = Field(description="Giải nghĩa ngắn ở native_lang.")
+
+
+class DictRelated(BaseModel):
+    """Cụm related: đồng nghĩa, trái nghĩa, từ liên quan, mẹo nhớ."""
+    model_config = _CAMEL_CFG
+
+    synonyms: list[DictWordRef] = Field(default_factory=list)
+    antonyms: list[DictWordRef] = Field(default_factory=list)
+    related_words: list[DictWordRef] = Field(default_factory=list)
+    memory_tips: list[str] = Field(
         default_factory=list,
-        description="1–3 câu ví dụ tự nhiên ở target_lang",
+        description="1–3 mẹo nhớ ngắn ở native_lang (mẹ đẻ).",
     )
 
 
 class DictResponse(BaseModel):
+    """Entry từ điển đa ngôn ngữ. JSON output dùng camelCase."""
+    model_config = _CAMEL_CFG
+
     request_id: str
     service: Literal["dict"] = "dict"
     processing_time_ms: int
     model_used: str
 
-    input_word: str
+    word: str = Field(description="Từ chuẩn hoá (echo lại input đã trim).")
     native_lang: str
     target_lang: str
-    headword: str = Field(description="Từ chính ở target_lang (vd 'freedom')")
-    ipa: str = Field(description="Phiên âm IPA, vd /ˈfriː.dəm/")
-    definitions: list[DictDefinition] = Field(
-        description="1–5 định nghĩa, mỗi định nghĩa kèm part_of_speech và examples",
+
+    phonetic: DictPhonetic
+    short_meaning: str = Field(
+        description="Nghĩa ngắn 1 dòng ở native_lang (mẹ đẻ) — phù hợp hiển thị nhanh.",
     )
+
+    definitions: list[DictDefinition] = Field(description="1–2 nét nghĩa chính.")
+    examples: list[DictExample] = Field(description="1–2 câu ví dụ tiêu biểu.")
+    phrases: list[DictExample] = Field(
+        default_factory=list,
+        description="0–4 cụm từ / collocation thường dùng.",
+    )
+    related: DictRelated
 
 
 class HealthStatus(BaseModel):

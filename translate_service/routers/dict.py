@@ -1,11 +1,23 @@
-"""Endpoint /v1/dict — tra từ điển song ngữ kiểu Cambridge."""
+"""Endpoint /v1/dict — tra từ điển đa ngôn ngữ.
+
+Output rich JSON (camelCase): word, phonetic (ipa+romanization), shortMeaning,
+definitions, examples, phrases, related (synonyms/antonyms/relatedWords/memoryTips).
+"""
 from __future__ import annotations
 
 import time
 
 from fastapi import APIRouter, HTTPException, Request, status
 
-from models.schemas import DictDefinition, DictRequest, DictResponse
+from models.schemas import (
+    DictDefinition,
+    DictExample,
+    DictPhonetic,
+    DictRelated,
+    DictRequest,
+    DictResponse,
+    DictWordRef,
+)
 from services.dictionary import dict_lookup
 from utils.logging import get_logger
 
@@ -13,13 +25,9 @@ router = APIRouter(tags=["dictionary"])
 log = get_logger(__name__)
 
 
-@router.post("/v1/dict", response_model=DictResponse)
+@router.post("/v1/dict", response_model=DictResponse, response_model_by_alias=True)
 async def lookup_word(req: DictRequest, request: Request) -> DictResponse:
-    """Tra từ điển: nhập từ ở native_lang, trả entry Cambridge-style của target_lang.
-
-    Output gồm headword, IPA, list definitions với part_of_speech, definition gốc + dịch,
-    và examples ở target_lang.
-    """
+    """Tra từ điển: nhập word ở native_lang, nhận entry chi tiết với meaning ở target_lang."""
     request_id = request.state.request_id
     registry = request.app.state.vllm_registry
     endpoint = registry.translator
@@ -47,7 +55,7 @@ async def lookup_word(req: DictRequest, request: Request) -> DictResponse:
 
     elapsed_ms = int((time.perf_counter() - started) * 1000)
 
-    if not result.headword or not result.definitions:
+    if not result.definitions:
         log.warning(
             "dict_empty_result",
             request_id=request_id,
@@ -64,10 +72,11 @@ async def lookup_word(req: DictRequest, request: Request) -> DictResponse:
         "dict_ok",
         request_id=request_id,
         word=req.word,
-        headword=result.headword,
         native_lang=req.native_lang,
         target_lang=req.target_lang,
         n_definitions=len(result.definitions),
+        n_examples=len(result.examples),
+        n_phrases=len(result.phrases),
         elapsed_ms=elapsed_ms,
     )
 
@@ -75,10 +84,21 @@ async def lookup_word(req: DictRequest, request: Request) -> DictResponse:
         request_id=request_id,
         processing_time_ms=elapsed_ms,
         model_used=fingerprint,
-        input_word=req.word,
+        word=result.word or req.word.strip(),
         native_lang=req.native_lang,
         target_lang=req.target_lang,
-        headword=result.headword,
-        ipa=result.ipa,
+        phonetic=DictPhonetic(
+            ipa=result.phonetic_ipa,
+            romanization=result.phonetic_romanization,
+        ),
+        short_meaning=result.short_meaning,
         definitions=[DictDefinition(**d) for d in result.definitions],
+        examples=[DictExample(**e) for e in result.examples],
+        phrases=[DictExample(**p) for p in result.phrases],
+        related=DictRelated(
+            synonyms=[DictWordRef(**s) for s in result.synonyms],
+            antonyms=[DictWordRef(**a) for a in result.antonyms],
+            related_words=[DictWordRef(**r) for r in result.related_words],
+            memory_tips=result.memory_tips,
+        ),
     )
