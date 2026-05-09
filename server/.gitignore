@@ -1,5 +1,5 @@
 # KHÔNG BAO GIỜ commit private key
-deploy_key
+
 deploy_key.pem
 id_*
 !*.pub
