@@ -146,6 +146,120 @@ def _gap_axis(b1: list[list[int]], b2: list[list[int]], axis: str) -> int:
     return max(b1_ - a2, a1 - b2_)
 
 
+def _filter_furigana_blocks(
+    blocks: list[OcrLine],
+    max_width_ratio: float = 0.7,
+    min_height_ratio: float = 1.3,
+    y_coverage_min: float = 0.8,
+    proximity_factor: float = 1.0,
+) -> list[int]:
+    """Lọc furigana global — return list index của các block GIỮ LẠI.
+
+    Drop block i nếu tồn tại block j thỏa MỌI điều kiện:
+    1. widths[i] < widths[j] × 0.7 — i hẹp hơn j ≥30% (font nhỏ hơn)
+    2. heights[j] ≥ heights[i] × 1.3 — j cao hơn i ≥30% (cột kanji nhiều chars
+       luôn cao hơn cột furigana ngắn vì furigana annotate 1 phần kanji column)
+       ⭐ ĐÂY LÀ ĐIỂM PHÂN BIỆT VỚI 2 cột song song (cùng độ cao) trong manga
+    3. y-coverage(i in j) ≥ 0.8 — y-range của i lọt ≥80% trong j
+    4. x_gap < widths[j] × 1.0 — sát cạnh j
+
+    Block isolated (no nearby taller column) → giữ. Cột song song (similar
+    height) → giữ vì fail height ratio. Furigana inside kanji column → drop.
+    """
+    if len(blocks) < 2:
+        return list(range(len(blocks)))
+    widths = [_bbox_dim(b.bbox)[0] for b in blocks]
+    heights = [_bbox_dim(b.bbox)[1] for b in blocks]
+
+    keep: list[int] = []
+    for i, b in enumerate(blocks):
+        x1i, y1i, x2i, y2i = _bbox_axis_aligned(b.bbox)
+        h_i = heights[i]
+        is_furigana = False
+        for j, other in enumerate(blocks):
+            if i == j:
+                continue
+            if widths[i] >= widths[j] * max_width_ratio:
+                continue
+            if heights[j] < h_i * min_height_ratio:
+                continue
+            x1j, y1j, x2j, y2j = _bbox_axis_aligned(other.bbox)
+            inter_y = max(0, min(y2i, y2j) - max(y1i, y1j))
+            if h_i == 0 or inter_y / h_i < y_coverage_min:
+                continue
+            x_gap = max(x1j - x2i, x1i - x2j)
+            if x_gap < widths[j] * proximity_factor:
+                is_furigana = True
+                break
+        if not is_furigana:
+            keep.append(i)
+    return keep
+
+
+def _has_dark_separator(
+    image_gray: "np.ndarray",
+    bbox_a: list[list[int]],
+    bbox_b: list[list[int]],
+    axis: str,
+    dark_threshold: int = 100,
+    min_dark_ratio: float = 0.3,
+) -> bool:
+    """Detect bubble border (dark stroke) trong gap giữa 2 bbox.
+
+    Dùng làm "hard stop" trong clustering: 2 text-line gần nhau về geometry
+    nhưng có nét đen liên tục giữa chúng → 99% là border 2 bubble khác nhau.
+    Đây là feature cốt lõi của option A (border-aware clustering).
+
+    axis="x": cột vertical text kề nhau, gap nằm theo phương ngang → tìm dark
+    line dọc (column nào có ≥ min_dark_ratio dark pixels).
+    axis="y": dòng horizontal stack, gap dọc → tìm dark line ngang.
+    """
+    x1a, y1a, x2a, y2a = _bbox_axis_aligned(bbox_a)
+    x1b, y1b, x2b, y2b = _bbox_axis_aligned(bbox_b)
+
+    if axis == "x":
+        if x2a < x1b:
+            gx1, gx2 = x2a, x1b
+        elif x2b < x1a:
+            gx1, gx2 = x2b, x1a
+        else:
+            return False  # overlap, no gap
+        gy1, gy2 = max(y1a, y1b), min(y2a, y2b)
+    else:
+        if y2a < y1b:
+            gy1, gy2 = y2a, y1b
+        elif y2b < y1a:
+            gy1, gy2 = y2b, y1a
+        else:
+            return False
+        gx1, gx2 = max(x1a, x1b), min(x2a, x2b)
+
+    if gx2 <= gx1 or gy2 <= gy1:
+        return False
+
+    H, W = image_gray.shape[:2]
+    gx1, gx2 = max(0, gx1), min(W, gx2)
+    gy1, gy2 = max(0, gy1), min(H, gy2)
+    crop = image_gray[gy1:gy2, gx1:gx2]
+    if crop.size == 0:
+        return False
+
+    dark_mask = (crop < dark_threshold)
+    # 2-tier check:
+    # 1) Column/row-wise: nét đen thẳng (typical bubble border) → max ratio cao
+    # 2) Total dark fraction: catch border cong/đứt nét (curvy bubble) — column
+    #    riêng lẻ không qua threshold nhưng tổng dark pixel vẫn đáng kể.
+    if axis == "x":
+        col_dark = dark_mask.mean(axis=0)
+        if float(col_dark.max()) >= min_dark_ratio:
+            return True
+    else:
+        row_dark = dark_mask.mean(axis=1)
+        if float(row_dark.max()) >= min_dark_ratio:
+            return True
+    return float(dark_mask.mean()) >= 0.08
+
+
 def _filter_valid_bubbles(
     raw: list[tuple[int, int, int, int]],
     img_w: int,
@@ -306,31 +420,48 @@ def cluster_into_bubbles(
     image_height: int,
     image_bytes: bytes | None = None,
 ) -> list[list[int]]:
-    """Group text-lines thành bubbles — ưu tiên CV bubble detection, fallback heuristic.
+    """Group text-lines thành bubbles — unified union-find với CV + border-aware.
 
-    **Step 1**: Detect speech bubble bằng cv2.findContours (manga có border đen + interior trắng).
-    Mỗi contour = 1 bubble. Group blocks có center nằm trong bubble bbox.
+    Pipeline:
+    1. Decode grayscale ảnh 1 lần (share cho CV detection + border check).
+    2. CV bubble detection (3 strategy: fixed/adaptive/border floodfill).
+    3. Assign mỗi block → smallest CV bubble chứa nó (-1 nếu không có).
+    4. Union-find pairwise với 3 ràng buộc:
+       - Cùng orientation (vertical vs horizontal)
+       - Same CV bubble (option C): nếu CV active mà 2 block khác bubble → KHÔNG merge
+       - No dark separator giữa 2 bbox (option A): có nét đen liên tục trong gap
+         = border bubble → KHÔNG merge
 
-    **Step 2 (fallback)**: Blocks không nằm trong bubble nào → cluster bằng orientation heuristic.
-
-    Khắc phục case 2 bubble cạnh nhau (cùng độ cao + gần nhau) bị heuristic cũ gộp sai.
+    Khi CV active, geometric threshold loose để cluster intra-bubble dễ. Khi CV
+    fail toàn bộ, threshold strict để không over-merge.
     """
     n = len(blocks)
     if n == 0:
         return []
 
-    # Step 1: CV bubble detection
+    # Decode grayscale 1 lần (cho CV + border check)
+    image_gray = None
+    if image_bytes is not None:
+        try:
+            import cv2  # type: ignore[import-not-found]
+            arr = np.frombuffer(image_bytes, np.uint8)
+            image_gray = cv2.imdecode(arr, cv2.IMREAD_GRAYSCALE)
+        except Exception as exc:  # noqa: BLE001
+            log.warning("decode_image_failed error=%s", exc)
+
+    # CV bubble detection
     bubbles_cv: list[tuple[int, int, int, int]] = []
     if image_bytes is not None:
         try:
             bubbles_cv = detect_speech_bubbles_cv(image_bytes, image_width, image_height)
-        except Exception as exc:  # noqa: BLE001 — không được fail request vì CV
+        except Exception as exc:  # noqa: BLE001
             log.warning("bubble_cv_failed error=%s", exc)
             bubbles_cv = []
+    cv_active = len(bubbles_cv) > 0
 
+    # Assign block → smallest CV bubble chứa center
     block_to_bubble: list[int] = [-1] * n
     for i, blk in enumerate(blocks):
-        # Match block với bubble nhỏ nhất chứa nó (tránh nested contours)
         best_bubble = -1
         best_area = float("inf")
         for bi, bub in enumerate(bubbles_cv):
@@ -340,59 +471,6 @@ def cluster_into_bubbles(
                     best_area = area
                     best_bubble = bi
         block_to_bubble[i] = best_bubble
-
-    cv_clusters: dict[int, list[int]] = {}
-    fallback_indices: list[int] = []
-    for i, bi in enumerate(block_to_bubble):
-        if bi == -1:
-            fallback_indices.append(i)
-        else:
-            cv_clusters.setdefault(bi, []).append(i)
-
-    result: list[list[int]] = list(cv_clusters.values())
-
-    # Step 2: fallback heuristic cho blocks không thuộc bubble nào
-    if fallback_indices:
-        fb_clusters = _cluster_heuristic(
-            [blocks[i] for i in fallback_indices], image_width, image_height,
-        )
-        for fc in fb_clusters:
-            result.append([fallback_indices[k] for k in fc])
-
-    log.info(
-        "cluster_done cv_bubbles=%d cv_grouped=%d fallback=%d total_clusters=%d",
-        len(bubbles_cv), n - len(fallback_indices), len(fallback_indices), len(result),
-    )
-    return result
-
-
-def _cluster_heuristic(
-    blocks: list[OcrLine],
-    image_width: int,
-    image_height: int,
-) -> list[list[int]]:
-    """Fallback heuristic clustering — dùng khi CV không detect được bubble.
-
-    **Vertical text (manga JP standard):**
-    - 1 bubble = nhiều CỘT vertical kề nhau (đọc phải→trái)
-    - 2 vertical blocks thuộc cùng bubble nếu:
-      * y_range overlap > 40% (cùng độ cao)
-      * x_gap < line_width × 2.5 (cột kề nhau, không quá xa)
-
-    **Horizontal text:**
-    - 1 bubble = nhiều DÒNG ngang xếp chồng (đọc trên→dưới)
-    - 2 horizontal blocks thuộc cùng bubble nếu:
-      * x_range overlap > 40% (cùng cột text)
-      * y_gap < line_height × 2.0 (dòng kề nhau)
-
-    **Khác orientation (vertical vs horizontal)** = bubble riêng.
-    Trường hợp "先生" chữ nhỏ horizontal lẫn vào các bubble vertical sẽ tự thành block riêng.
-
-    Trả list[cluster] với mỗi cluster là list index của blocks.
-    """
-    n = len(blocks)
-    if n == 0:
-        return []
 
     # Union-find
     parent = list(range(n))
@@ -408,45 +486,77 @@ def _cluster_heuristic(
         if ri != rj:
             parent[ri] = rj
 
+    border_blocks = 0
     for i in range(n):
-        bi = blocks[i].bbox
-        wi, hi = _bbox_dim(bi)
-        vi = _is_vertical(bi)
+        bi_box = blocks[i].bbox
+        wi, hi = _bbox_dim(bi_box)
+        vi = _is_vertical(bi_box)
         for j in range(i + 1, n):
-            bj = blocks[j].bbox
-            wj, hj = _bbox_dim(bj)
-            vj = _is_vertical(bj)
-            # Khác orientation → bubble riêng
+            bj_box = blocks[j].bbox
+            wj, hj = _bbox_dim(bj_box)
+            vj = _is_vertical(bj_box)
+
+            # Rule 1: cùng orientation
             if vi != vj:
                 continue
 
+            bi_id = block_to_bubble[i]
+            bj_id = block_to_bubble[j]
+            same_cv_bubble = bi_id != -1 and bi_id == bj_id
+            both_outside = bi_id == -1 and bj_id == -1
+
+            # Rule 2 (option C tinh chỉnh): CV active →
+            # - Same bubble: cluster với threshold loose
+            # - Both outside any bubble: cluster với threshold STRICT
+            #   (title + subtitle đứng ngoài speech bubble vẫn phải gộp được)
+            # - Mixed (1 in bubble, 1 ngoài) hoặc 2 bubble khác nhau: KHÔNG merge
+            if cv_active and not same_cv_bubble and not both_outside:
+                continue
+
+            # Rule 3: geometric. Loose khi cùng CV bubble (y_ovl loose), strict
+            # khi outside/no-CV. Gap_max GIẢM xuống 1.5× cho cùng CV bubble vì
+            # CV đôi khi merge 2 bubble adjacent vào 1 mega-bubble — gap-based
+            # split paragraph trong mega-bubble vẫn cần thiết.
+            loose = same_cv_bubble
             if vi:
-                # Vertical: cột phải kề nhau, cùng độ cao
-                # 1) y_range overlap đủ lớn (cùng level cao)
-                y_ovl = _bbox_overlap_axis(bi, bj, "y")
-                if y_ovl < 0.4:
-                    continue
-                # 2) x_gap nhỏ (kề cột)
-                x_gap = _gap_axis(bi, bj, "x")
+                y_ovl = _bbox_overlap_axis(bi_box, bj_box, "y")
+                x_gap = _gap_axis(bi_box, bj_box, "x")
                 line_w = max(wi, wj)
-                if x_gap > line_w * 2.5:
+                y_min = 0.3 if loose else 0.5
+                gap_max = line_w * (1.5 if loose else 1.0)
+                if y_ovl < y_min or x_gap > gap_max:
                     continue
+                axis = "x"
             else:
-                # Horizontal: dòng kề chồng, cùng cột text
-                x_ovl = _bbox_overlap_axis(bi, bj, "x")
-                if x_ovl < 0.4:
-                    continue
-                y_gap = _gap_axis(bi, bj, "y")
+                x_ovl = _bbox_overlap_axis(bi_box, bj_box, "x")
+                y_gap = _gap_axis(bi_box, bj_box, "y")
                 line_h = max(hi, hj)
-                if y_gap > line_h * 2.0:
+                x_min = 0.3 if loose else 0.5
+                gap_max = line_h * (1.5 if loose else 1.0)
+                if x_ovl < x_min or y_gap > gap_max:
                     continue
+                axis = "y"
+
+            # Rule 4 (option A): có nét đen trong gap = border bubble → KHÔNG merge.
+            # Đây là tín hiệu mạnh nhất, override geometric proximity.
+            if image_gray is not None and _has_dark_separator(
+                image_gray, bi_box, bj_box, axis,
+            ):
+                border_blocks += 1
+                continue
+
             union(i, j)
 
-    # Group theo root
     clusters: dict[int, list[int]] = {}
     for i in range(n):
-        r = find(i)
-        clusters.setdefault(r, []).append(i)
+        clusters.setdefault(find(i), []).append(i)
+
+    cv_grouped = sum(1 for b in block_to_bubble if b != -1)
+    log.info(
+        "cluster_done cv_bubbles=%d cv_active=%s cv_grouped=%d/%d "
+        "border_blocked=%d total_clusters=%d",
+        len(bubbles_cv), cv_active, cv_grouped, n, border_blocks, len(clusters),
+    )
     return list(clusters.values())
 
 
@@ -484,6 +594,33 @@ async def run_manga_pipeline(
     """
     # Step 1: PaddleOCR detection + fallback recognition (lang="japan" cover hiragana/katakana/kanji)
     blocks, width, height = await engine.ocr(image_bytes, "japan", return_word_box=False)
+    if not blocks:
+        return [], [], width, height
+
+    # Step 1.4: Drop noise blocks — low confidence + small size = icon/artifact
+    # (vd ®© logo, page number, ornament). Real text bubbles thường conf ≥ 0.6
+    # hoặc bbox đủ to (≥ 40px). Chỉ drop khi BOTH conditions match → conservative.
+    pre_noise = len(blocks)
+    blocks = [
+        b for b in blocks
+        if not (
+            b.confidence < 0.55
+            and _bbox_dim(b.bbox)[0] < 40
+            and _bbox_dim(b.bbox)[1] < 40
+        )
+    ]
+    if len(blocks) < pre_noise:
+        log.info("filter_noise dropped=%d kept=%d", pre_noise - len(blocks), len(blocks))
+    if not blocks:
+        return [], [], width, height
+
+    # Step 1.5: Lọc furigana global TRƯỚC manga-ocr re-recognize để tiết kiệm GPU.
+    # Filter dùng width + height + y-coverage + x-gap → chỉ drop furigana thật,
+    # giữ cột text song song và bubble nhỏ độc lập.
+    keep_idx = _filter_furigana_blocks(blocks)
+    if len(keep_idx) < len(blocks):
+        log.info("filter_furigana dropped=%d kept=%d", len(blocks) - len(keep_idx), len(keep_idx))
+        blocks = [blocks[i] for i in keep_idx]
     if not blocks:
         return [], [], width, height
 

@@ -1,6 +1,8 @@
 {
   "permissions": {
     "allow": [
+      "Bash(ssh:*)",
+      "Bash(rsync:*)",
       "Bash(ssh -p 26083 -i /home/thinh/AI_server/server/deploy_key -o IdentitiesOnly=yes -o UserKnownHostsFile=/home/thinh/AI_server/server/known_hosts -o BatchMode=yes root@89.221.67.144 'bash -s')",
       "Bash(python3 -c ' *)",
       "Bash(rsync -avz --checksum -e 'ssh -p 26083 -i /home/thinh/AI_server/server/deploy_key -o IdentitiesOnly=yes -o UserKnownHostsFile=/home/thinh/AI_server/server/known_hosts' /home/thinh/AI_server/api/main.py root@89.221.67.144:/workspace/vbk-ai-server/api/)",

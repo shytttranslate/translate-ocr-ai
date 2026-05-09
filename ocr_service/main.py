@@ -7,13 +7,9 @@ from __future__ import annotations
 
 import base64
 import binascii
-import hashlib
 import logging
-import os
-import threading
 import time
 import uuid
-from collections import OrderedDict
 from contextlib import asynccontextmanager
 from typing import AsyncIterator, Literal
 
@@ -38,35 +34,6 @@ from paragraph_merger import (
 # Limit ảnh fetch từ URL — tránh DOS bằng URL trỏ tới file lớn.
 URL_FETCH_MAX_BYTES = 10 * 1024 * 1024  # 10 MB
 URL_FETCH_TIMEOUT_S = 15.0
-
-# LRU cache cho OCR result theo SHA256(image_bytes + lang). 256 entry × ~5KB response = ~1.3MB.
-CACHE_MAX_ENTRIES = int(os.environ.get("PADDLEOCR_CACHE_SIZE", "256"))
-_result_cache: "OrderedDict[str, dict]" = OrderedDict()
-_cache_lock = threading.Lock()
-
-
-def _cache_key(image_bytes: bytes, lang: str) -> str:
-    h = hashlib.sha256()
-    h.update(lang.encode("ascii"))
-    h.update(b":")
-    h.update(image_bytes)
-    return h.hexdigest()
-
-
-def _cache_get(key: str) -> dict | None:
-    with _cache_lock:
-        if key in _result_cache:
-            _result_cache.move_to_end(key)
-            return _result_cache[key]
-        return None
-
-
-def _cache_put(key: str, value: dict) -> None:
-    with _cache_lock:
-        _result_cache[key] = value
-        _result_cache.move_to_end(key)
-        while len(_result_cache) > CACHE_MAX_ENTRIES:
-            _result_cache.popitem(last=False)
 
 
 logging.basicConfig(
@@ -517,22 +484,6 @@ async def _run_manga_ocr(image_bytes: bytes, request_id: str) -> OcrResponse:
     """
     from manga_pipeline import run_manga_pipeline
 
-    cache_key = _cache_key(image_bytes, "mode=manga")
-    cached = _cache_get(cache_key)
-    if cached is not None:
-        log.info("ocr_cache_hit_manga request_id=%s", request_id)
-        return OcrResponse(
-            request_id=request_id,
-            processing_time_ms=cached["processing_time_ms"],
-            lang="japan",
-            detected_lang="japan",
-            image_width=cached["image_width"],
-            image_height=cached["image_height"],
-            full_text=cached["full_text"],
-            blocks=[OcrBlock(**p) for p in cached["blocks"]],
-            reading_order="rtl",
-        )
-
     engine: OcrEngine = app.state.engine
     started = time.perf_counter()
     try:
@@ -568,15 +519,6 @@ async def _run_manga_ocr(image_bytes: bytes, request_id: str) -> OcrResponse:
         "manga_ocr_ok request_id=%s n_lines=%d n_blocks=%d size=%dx%d elapsed=%dms",
         request_id, len(blocks), len(bubbles), width, height, elapsed_ms,
     )
-
-    response_payload = {
-        "processing_time_ms": elapsed_ms,
-        "image_width": width,
-        "image_height": height,
-        "full_text": full_text,
-        "blocks": blocks_payload,
-    }
-    _cache_put(cache_key, response_payload)
 
     return OcrResponse(
         request_id=request_id,
@@ -638,22 +580,6 @@ async def _run_ocr(
     except Exception as exc:  # noqa: BLE001
         log.warning("word_box_probe_failed request_id=%s error=%s", request_id, exc)
 
-    cache_key = _cache_key(image_bytes, f"{lang}:order={reading_order}:wb={int(return_word_box)}")
-    cached = _cache_get(cache_key)
-    if cached is not None:
-        log.info("ocr_cache_hit request_id=%s lang=%s order=%s", request_id, lang, reading_order)
-        return OcrResponse(
-            request_id=request_id,
-            processing_time_ms=cached["processing_time_ms"],
-            lang=lang,
-            detected_lang=cached["detected_lang"],
-            image_width=cached["image_width"],
-            image_height=cached["image_height"],
-            full_text=cached["full_text"],
-            blocks=[OcrBlock(**b) for b in cached["blocks"]],
-            reading_order=cached.get("reading_order"),
-        )
-
     engine: OcrEngine = app.state.engine
     started = time.perf_counter()
     try:
@@ -680,17 +606,6 @@ async def _run_ocr(
         len(blocks_payload), width, height, resolved_order,
         return_word_box, elapsed_ms,
     )
-
-    response_payload = {
-        "processing_time_ms": elapsed_ms,
-        "detected_lang": detected_lang,
-        "image_width": width,
-        "image_height": height,
-        "full_text": full_text,
-        "blocks": blocks_payload,
-        "reading_order": resolved_order,
-    }
-    _cache_put(cache_key, response_payload)
 
     return OcrResponse(
         request_id=request_id,

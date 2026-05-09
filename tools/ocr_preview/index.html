@@ -595,8 +595,8 @@
       <button id="btnZoom1" title="100%">1:1</button>
 
       <span class="legend">
-        <span><span class="swatch p"></span>paragraph</span>
-        <span><span class="swatch b"></span>block</span>
+        <span><span class="swatch p"></span>block</span>
+        <span><span class="swatch b"></span>line</span>
         <span><span class="swatch w"></span>word</span>
         <span><span class="swatch l"></span>low conf</span>
       </span>
@@ -628,8 +628,8 @@
       <div class="full-text" id="fullText">(chưa có)</div>
     </details>
     <div class="list-tabs" id="listTabs">
-      <button data-list="paragraph" class="active">Para <span class="count" id="cntPara">0</span></button>
-      <button data-list="block">Block <span class="count" id="cntBlock">0</span></button>
+      <button data-list="block" class="active">Block <span class="count" id="cntBlock">0</span></button>
+      <button data-list="line">Line <span class="count" id="cntLine">0</span></button>
       <button data-list="word" disabled>Word <span class="count" id="cntWord">0</span></button>
     </div>
     <div class="item-list" id="itemList">
@@ -670,7 +670,7 @@ const viewState = {
   showLabel: false,
   redLowConf: true,
   layers: { block: true, line: false, word: false },  // bật/tắt từng overlay độc lập (ML Kit hierarchy)
-  listLayer: "block",                                  // tab nào đang hiện ở right panel
+  listLayer: "block",                                  // "block" | "line" | "word" — tab item list bên phải
   activeId: null,
 };
 
@@ -860,16 +860,23 @@ function render() {
   $("showLine").checked = viewState.layers.line;
   $("showWord").checked = viewState.layers.word;
 
-  // Tabs cho item list
-  if ($("cntPara")) $("cntPara").textContent = blocks.length;
-  if ($("cntBlock")) $("cntBlock").textContent = lineItems.length;
-  if ($("cntWord")) $("cntWord").textContent = wordItems.length;
+  // Tabs cho item list — Block (top-level) / Line / Word
+  $("cntBlock").textContent = blocks.length;
+  $("cntLine").textContent = lineItems.length;
+  $("cntWord").textContent = wordItems.length;
   const listTabs = $("listTabs");
   if (listTabs) {
-    const paraTab = listTabs.querySelector('[data-list="paragraph"]');
+    const blockTab = listTabs.querySelector('[data-list="block"]');
+    const lineTab = listTabs.querySelector('[data-list="line"]');
     const wordTab = listTabs.querySelector('[data-list="word"]');
-    if (paraTab) paraTab.disabled = blocks.length === 0;
+    if (blockTab) blockTab.disabled = blocks.length === 0;
+    if (lineTab) lineTab.disabled = !hasLines;
     if (wordTab) wordTab.disabled = !hasWords;
+    // Nếu tab hiện tại bị disabled, fallback sang tab có data
+    const activeBtn = listTabs.querySelector(`[data-list="${viewState.listLayer}"]`);
+    if (activeBtn && activeBtn.disabled) {
+      viewState.listLayer = blocks.length ? "block" : (hasLines ? "line" : "word");
+    }
   }
 
   // Stats
@@ -958,15 +965,14 @@ function buildLayer(g, items) {
 function renderItemList() {
   if (!lastResult) return;
   const { response } = lastResult;
-  let items = [];
   const blocks = response.blocks || [];
-  if (viewState.listLayer === "paragraph" || viewState.listLayer === "block") {
-    // Tab "Para" tương ứng top-level block (ML Kit Block = paragraph)
+  let items = [];
+  if (viewState.listLayer === "block") {
     items = blocks.map((b, i) => ({
       id: `b${i}`, layer: "paragraph", text: b.text,
       conf: b.confidence, meta: `${b.line_count} lines`,
     }));
-  } else if (viewState.listLayer === "line" || viewState.listLayer === "blockLine") {
+  } else if (viewState.listLayer === "line") {
     blocks.forEach((b, bi) => {
       (b.lines || []).forEach((l, li) => {
         items.push({
@@ -1179,8 +1185,8 @@ window.addEventListener("keydown", (e) => {
   else if (e.key === "b" || e.key === "B") { viewState.showBox = !viewState.showBox; applyView(); }
   else if (e.key === "l" || e.key === "L") { viewState.showLabel = !viewState.showLabel; applyView(); }
   // Phím 1/2/3 toggle overlay layer (không phải switch — bật/tắt độc lập)
-  else if (e.key === "1" && !$("showPara").disabled) { $("showPara").click(); }
-  else if (e.key === "2") { $("showBlock").click(); }
+  else if (e.key === "1") { $("showBlock").click(); }
+  else if (e.key === "2" && !$("showLine").disabled) { $("showLine").click(); }
   else if (e.key === "3" && !$("showWord").disabled) { $("showWord").click(); }
 });
 
