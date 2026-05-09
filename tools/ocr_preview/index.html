@@ -885,7 +885,7 @@ function render() {
     `<span class="badge ${order}">${order.toUpperCase()}</span>`;
   $("statBlocks").textContent = blocks.length;
   if ($("statLines")) $("statLines").textContent = lineItems.length;
-  $("statWords").textContent = hasWords ? wordItems.length : "(ảnh quá lớn → degrade)";
+  $("statWords").textContent = wordItems.length;
   $("statAvgConf").textContent = `${(avgConf * 100).toFixed(1)}%`;
   $("statTime").textContent = `${response.processing_time_ms} ms`;
 

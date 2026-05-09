@@ -150,6 +150,10 @@ MAX_IMAGE_DIMENSION = int(os.environ.get("PADDLEOCR_MAX_DIMENSION", "1600"))
 # Hard cap pixel count — PaddleOCR detection crash với ảnh > ~1.5-2M pixels (ConvKernel segfault).
 # Sau resize MAX_DIMENSION, nếu vẫn vượt cap → tiếp tục downscale theo sqrt(cap/pixels).
 MAX_IMAGE_PIXELS = int(os.environ.get("PADDLEOCR_MAX_PIXELS", "1500000"))
+# Cap riêng khi return_word_box=True — PaddleOCR `text_word_boxes` crash sớm hơn detection
+# thường (~1M pixels với ảnh nhiều text). Resize aggressive xuống ngưỡng này giúp
+# **luôn trả word_box** mà không crash. Bbox sẽ được scale ngược về ảnh gốc.
+MAX_IMAGE_PIXELS_WORD_BOX = int(os.environ.get("PADDLEOCR_MAX_PIXELS_WORD_BOX", "1000000"))
 # textline orientation classification — cần khi text xoay 90/180/270°. Tắt nhanh hơn ~10-15%.
 USE_TEXTLINE_ORIENTATION = os.environ.get("PADDLEOCR_USE_TEXTLINE_ORI", "0") == "1"
 # Filter nhiễu: bỏ text block có confidence < threshold. Default 0.3 (30%).
@@ -459,36 +463,52 @@ class OcrEngine:
         return blocks
 
     @staticmethod
-    def _decode_image(image_bytes: bytes) -> tuple[np.ndarray, int, int]:
+    def _decode_image(
+        image_bytes: bytes, word_box: bool = False,
+    ) -> tuple[np.ndarray, int, int, float]:
+        """Decode + resize ảnh trong giới hạn an toàn của PaddleOCR.
+
+        2-pass resize:
+            (1) cap dimension (max edge ≤ MAX_IMAGE_DIMENSION).
+            (2) cap pixel count — PaddleOCR detection crash với ảnh nhiều pixels;
+                nếu `word_box=True` dùng cap thấp hơn (~1M) vì word_box pipeline
+                memory-hungry hơn (`text_word_boxes` crash sớm).
+
+        Bbox sẽ được scale ngược lên ảnh gốc bởi caller (`engine.ocr`) qua `scale`.
+        """
         img = Image.open(io.BytesIO(image_bytes))
         if img.mode != "RGB":
             img = img.convert("RGB")
         original_width, original_height = img.size
 
-        # 2-pass resize: (1) cap dimension, (2) cap pixel count.
-        # PaddleOCR crash với pixels > ~1.5-2M ngay cả khi dimension nhỏ (vd ảnh vuông 1500x1500).
+        pixel_cap = MAX_IMAGE_PIXELS_WORD_BOX if word_box else MAX_IMAGE_PIXELS
         scale = 1.0
         cur_w, cur_h = original_width, original_height
         if max(cur_w, cur_h) > MAX_IMAGE_DIMENSION:
             scale = MAX_IMAGE_DIMENSION / max(cur_w, cur_h)
             cur_w, cur_h = int(cur_w * scale), int(cur_h * scale)
-        if cur_w * cur_h > MAX_IMAGE_PIXELS:
-            extra = (MAX_IMAGE_PIXELS / (cur_w * cur_h)) ** 0.5
+        if cur_w * cur_h > pixel_cap:
+            extra = (pixel_cap / (cur_w * cur_h)) ** 0.5
             scale *= extra
             cur_w, cur_h = int(cur_w * extra), int(cur_h * extra)
         if scale < 1.0:
             img = img.resize((cur_w, cur_h), Image.LANCZOS)
-            log.info("image_resized %dx%d → %dx%d (scale=%.3f, pixels=%d)",
-                     original_width, original_height, cur_w, cur_h, scale, cur_w * cur_h)
+            log.info(
+                "image_resized %dx%d → %dx%d (scale=%.3f pixels=%d cap=%d word_box=%s)",
+                original_width, original_height, cur_w, cur_h, scale,
+                cur_w * cur_h, pixel_cap, word_box,
+            )
 
         rgb = np.asarray(img)
         bgr = rgb[:, :, ::-1].copy()
-        return bgr, original_width, original_height, scale  # type: ignore[return-value]
+        return bgr, original_width, original_height, scale
 
     async def ocr(
         self, image_bytes: bytes, lang: str, return_word_box: bool = False,
     ) -> tuple[list[OcrLine], int, int]:
-        bgr, width, height, scale = await asyncio.to_thread(self._decode_image, image_bytes)  # type: ignore[misc]
+        bgr, width, height, scale = await asyncio.to_thread(
+            self._decode_image, image_bytes, return_word_box,
+        )
         pool = self._get_pool(lang)
         await pool.ensure_initialized(self._build_engine)
         engine = await pool.acquire()
@@ -629,7 +649,11 @@ class OcrEngine:
             - Recognition lang chọn lỗi → retry với `ch`.
         """
         # Decode + resize 1 lần (reuse cho cả OSD và recognition pass dưới).
-        bgr, width, height, _scale = await asyncio.to_thread(self._decode_image, image_bytes)  # type: ignore[misc]
+        # Pass `return_word_box` để dùng pixel cap thấp hơn — đảm bảo recognition
+        # bên dưới không phải resize lại lần nữa.
+        bgr, width, height, _scale = await asyncio.to_thread(
+            self._decode_image, image_bytes, return_word_box,
+        )
 
         chosen_lang = AUTO_DEFAULT_LANG
         chosen_script: str | None = None

@@ -125,8 +125,9 @@ class OcrResponse(BaseModel):
     blocks: list[OcrBlock] = Field(
         default_factory=list,
         description=(
-            "ML Kit hierarchy: blocks → lines → words. Luôn populate đầy đủ. "
-            "Words có thể `[]` nếu ảnh > 1.5M pixels (PaddleOCR word_box crash với ảnh lớn — silent degrade)."
+            "ML Kit hierarchy: blocks → lines → words. Luôn populate đầy đủ — "
+            "ảnh lớn được auto-resize xuống cap an toàn (~1M pixels) trước khi OCR, "
+            "bbox được scale ngược về coordinate gốc."
         ),
     )
     reading_order: Literal["ltr", "rtl"] | None = Field(
@@ -564,8 +565,9 @@ async def _run_ocr(
 ) -> OcrResponse:
     """Logic OCR chính — luôn trả full hierarchy block + line + word.
 
-    Word-level (PaddleOCR `return_word_box=True`) auto silent-degrade về words=[]
-    nếu ảnh > 1.5M pixels sau resize (PaddleOCR crash với ảnh nhiều text + word_box).
+    Engine `_decode_image` áp dụng pixel cap thấp hơn (~1M) khi `return_word_box=True`,
+    đảm bảo word-level luôn được trả ra, kể cả với ảnh lớn (bbox sẽ scale ngược về
+    coordinate gốc trong engine).
     """
     if mode == "manga":
         return await _run_manga_ocr(image_bytes, request_id)
@@ -576,32 +578,7 @@ async def _run_ocr(
             detail=f"lang '{lang}' không hợp lệ. Cho phép: {sorted(SUPPORTED_LANGS)}",
         )
 
-    # Engine sẽ tự resize ảnh ≤ MAX_IMAGE_PIXELS — không phải lo crash bự nữa.
-    # Word_box vẫn đôi khi crash với nhiều text dày → degrade khi request word_box trên ảnh
-    # gần threshold (margin an toàn ở 70% MAX_PIXELS).
     return_word_box = True
-    try:
-        import io
-        from PIL import Image as _PILImage
-        with _PILImage.open(io.BytesIO(image_bytes)) as _probe:
-            w0, h0 = _probe.size
-        from engine import MAX_IMAGE_DIMENSION, MAX_IMAGE_PIXELS
-        max_dim = max(w0, h0)
-        scale = min(1.0, MAX_IMAGE_DIMENSION / max_dim) if max_dim > MAX_IMAGE_DIMENSION else 1.0
-        pixels_after = int(w0 * scale) * int(h0 * scale)
-        if pixels_after > MAX_IMAGE_PIXELS:
-            extra = (MAX_IMAGE_PIXELS / pixels_after) ** 0.5
-            pixels_after = int(pixels_after * extra * extra)
-        # Word_box risk threshold: 70% MAX_PIXELS.
-        if pixels_after > MAX_IMAGE_PIXELS * 0.7:
-            log.info(
-                "word_box_degraded request_id=%s size=%dx%d pixels_after=%d → words=[]",
-                request_id, w0, h0, pixels_after,
-            )
-            return_word_box = False
-    except Exception as exc:  # noqa: BLE001
-        log.warning("word_box_probe_failed request_id=%s error=%s", request_id, exc)
-
     engine: OcrEngine = app.state.engine
     started = time.perf_counter()
     try:
