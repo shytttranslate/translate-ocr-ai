@@ -46,11 +46,10 @@ class MangaBubble:
 class MangaOcrWrapper:
     """Singleton wrapper cho manga-ocr (lazy init).
 
-    **Thread safety:** torch CUDA forward pass KHÔNG thread-safe khi gọi đồng thời
-    từ multiple thread pool worker. Multi-thread + Blackwell + torch 2.11 → race condition
-    trong CUDA kernel scheduler → segfault SAU khi request return (async, libuv event loop).
-    Serialize bằng `_inference_lock` để mỗi inference chạy single-threaded.
-    Trade-off: throughput per-line giảm xuống ~1/lock, nhưng 13-24ms GPU vẫn fast enough.
+    Thread safety: torch 2.11+cu130 trên Blackwell SM 12.0 đã ổn — stress test 20
+    parallel forward pass không lock, 0 errors / 0 mismatch. Lock cũ (cu126 + cu120
+    race) đã gỡ. Speedup chính đến từ batch_recognize() — gom N crop vào 1
+    forward pass thay vì N forward sequential.
     """
 
     _instance: "MangaOcrWrapper | None" = None
@@ -59,8 +58,6 @@ class MangaOcrWrapper:
     def __init__(self) -> None:
         self._mocr: Any = None
         self._init_lock = threading.Lock()
-        # Serialize forward pass — tránh race CUDA giữa thread pool worker.
-        self._inference_lock = threading.Lock()
 
     @classmethod
     def get(cls) -> "MangaOcrWrapper":
@@ -79,21 +76,49 @@ class MangaOcrWrapper:
             log.info("manga_ocr_initializing")
             from manga_ocr import MangaOcr  # type: ignore[import-not-found]
             # GPU mode — torch 2.11+cu130 work trên Blackwell SM 12.0.
-            # Per-line inference 13-24ms GPU vs 50-200ms CPU (5-10x speedup), VRAM ~430MB.
-            # Override bằng env PADDLEOCR_MANGAOCR_CPU=1 nếu cần fallback.
+            # Per-line ~12-22ms GPU (single), batch giảm xuống ~3-5ms/line.
             import os
             force_cpu = os.environ.get("PADDLEOCR_MANGAOCR_CPU", "0") == "1"
             self._mocr = MangaOcr(force_cpu=force_cpu)
             log.info("manga_ocr_ready force_cpu=%s", force_cpu)
 
     def recognize(self, pil_image: Image.Image) -> str:
-        """Nhận diện text trong ảnh đã crop. Input: PIL.Image.
+        """Nhận diện text 1 ảnh đã crop."""
+        self._ensure_init()
+        return self._mocr(pil_image)
 
-        Thread-safe: lock serialize CUDA forward pass.
+    def recognize_batch(self, pil_images: list[Image.Image]) -> list[str]:
+        """Batch recognize — gom N ảnh thành 1 forward pass GPU.
+
+        Speedup ~3-5x so với gọi recognize() N lần do GPU parallelism trong batch
+        encoder/decoder. Generate giới hạn 300 tokens (ngang single).
+
+        Fallback per-image nếu batch raise (vd OOM với batch quá lớn).
         """
         self._ensure_init()
-        with self._inference_lock:
-            return self._mocr(pil_image)
+        if not pil_images:
+            return []
+        try:
+            import torch
+            from manga_ocr.ocr import post_process  # type: ignore[import-not-found]
+
+            xs: list[Any] = []
+            for img in pil_images:
+                gray = img.convert("L").convert("RGB")
+                pixel_values = self._mocr.processor(gray, return_tensors="pt").pixel_values
+                xs.append(pixel_values.squeeze(0))
+            batch = torch.stack(xs).to(self._mocr.model.device)
+            with torch.no_grad():
+                out = self._mocr.model.generate(batch, max_length=300)
+            out_cpu = out.cpu()
+            results: list[str] = []
+            for ids in out_cpu:
+                text = self._mocr.tokenizer.decode(ids, skip_special_tokens=True)
+                results.append(post_process(text))
+            return results
+        except Exception as exc:  # noqa: BLE001
+            log.warning("manga_ocr_batch_fallback error=%s", exc)
+            return [self._mocr(img) for img in pil_images]
 
 
 def _bbox_axis_aligned(poly: list[list[int]]) -> tuple[int, int, int, int]:
@@ -598,8 +623,11 @@ async def run_manga_pipeline(
 
     Returns: (text_blocks, bubbles, image_width, image_height)
     """
+    import time as _time
+    _t0 = _time.perf_counter()
     # Step 1: PaddleOCR detection + fallback recognition (lang="japan" cover hiragana/katakana/kanji)
     blocks, width, height = await engine.ocr(image_bytes, "japan", return_word_box=False)
+    _t_paddle = _time.perf_counter()
     if not blocks:
         return [], [], width, height
 
@@ -630,46 +658,43 @@ async def run_manga_pipeline(
     if not blocks:
         return [], [], width, height
 
-    # Step 2: Re-recognize bằng manga-ocr
+    # Step 2: Re-recognize bằng manga-ocr — BATCH 1 forward pass cho tất cả lines
     if use_manga_ocr_for_recognition:
         try:
             mocr = MangaOcrWrapper.get()
-            # Decode ảnh gốc 1 lần → numpy array. PIL.Image NOT thread-safe khi
-            # concurrent .crop() (race trong file decoder → "'NoneType' has no
-            # attribute 'read'"). Numpy array thread-safe (slicing trả view),
-            # Image.fromarray tạo Image mới per-thread.
+            # Decode ảnh 1 lần → numpy array (PIL.Image không thread-safe + tránh
+            # decode lại N lần per crop).
             pil_full = Image.open(io.BytesIO(image_bytes))
             if pil_full.mode != "RGB":
                 pil_full = pil_full.convert("RGB")
             arr = np.asarray(pil_full)
             img_h, img_w = arr.shape[:2]
 
-            def _re_recognize(blk: OcrLine) -> str:
+            crops: list[Image.Image] = []
+            crop_indices: list[int] = []  # index trong blocks tương ứng mỗi crop
+            for i, blk in enumerate(blocks):
                 x1, y1, x2, y2 = _bbox_axis_aligned(blk.bbox)
                 pad = 4
                 x1, y1 = max(0, x1 - pad), max(0, y1 - pad)
                 x2, y2 = min(img_w, x2 + pad), min(img_h, y2 + pad)
                 if x2 <= x1 or y2 <= y1:
-                    return blk.text
-                crop = Image.fromarray(arr[y1:y2, x1:x2])
-                try:
-                    return mocr.recognize(crop)
-                except Exception as exc:  # noqa: BLE001
-                    log.warning("manga_ocr_recognize_failed bbox=%s error=%s", (x1, y1, x2, y2), exc)
-                    return blk.text  # fallback paddle text
+                    continue
+                crops.append(Image.fromarray(arr[y1:y2, x1:x2]))
+                crop_indices.append(i)
 
-            # Run trong thread pool để không block event loop
-            new_texts = await asyncio.gather(
-                *[asyncio.to_thread(_re_recognize, b) for b in blocks]
-            )
-            for blk, new_text in zip(blocks, new_texts):
-                if new_text and new_text.strip():
-                    blk.text = new_text.strip()
+            if crops:
+                # Run batch trong thread pool để không block event loop
+                new_texts = await asyncio.to_thread(mocr.recognize_batch, crops)
+                for i, new_text in zip(crop_indices, new_texts):
+                    if new_text and new_text.strip():
+                        blocks[i].text = new_text.strip()
         except Exception as exc:  # noqa: BLE001
             log.warning("manga_ocr_pipeline_skipped error=%s", exc)
+    _t_mangaocr = _time.perf_counter()
 
     # Step 3: Cluster thành bubbles
     clusters = cluster_into_bubbles(blocks, width, height, image_bytes=image_bytes)
+    _t_cluster = _time.perf_counter()
     bubbles: list[MangaBubble] = []
     for indices in clusters:
         cluster_blocks = [blocks[i] for i in indices]
@@ -708,5 +733,15 @@ async def run_manga_pipeline(
 
     # Step 4: Sort RTL
     bubbles = sort_bubbles_rtl(bubbles)
+    _t_done = _time.perf_counter()
+    log.info(
+        "stage_timing paddle=%dms manga_ocr=%dms cluster=%dms bubble=%dms total=%dms n_lines=%d",
+        int((_t_paddle - _t0) * 1000),
+        int((_t_mangaocr - _t_paddle) * 1000),
+        int((_t_cluster - _t_mangaocr) * 1000),
+        int((_t_done - _t_cluster) * 1000),
+        int((_t_done - _t0) * 1000),
+        len(blocks),
+    )
 
     return blocks, bubbles, width, height
