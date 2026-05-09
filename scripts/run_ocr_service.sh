@@ -21,9 +21,9 @@ export FLAGS_enable_pir_in_executor="${FLAGS_enable_pir_in_executor:-0}"
 # CPU release GIL trong predict() nên thread pool 8 effective parallelism.
 export PADDLEOCR_POOL_SIZE="${PADDLEOCR_POOL_SIZE:-8}"
 
-# Device: BẮT BUỘC 'cpu' trên Blackwell SM 12.0!
-# paddlepaddle-gpu cu126 wheel không có kernel SM 12.0 → detection silent fail.
-export PADDLEOCR_DEVICE="${PADDLEOCR_DEVICE:-cpu}"
+# Device: 'gpu' default — paddlepaddle-gpu cu130 wheel có kernel SM 12.0.
+# Set 'cpu' nếu cần fallback debug (vd wheel install hỏng).
+export PADDLEOCR_DEVICE="${PADDLEOCR_DEVICE:-gpu}"
 # Server detection model: accuracy cao hơn mobile ~5%, chậm hơn 3-5x trên CPU.
 export PADDLEOCR_USE_MOBILE="${PADDLEOCR_USE_MOBILE:-0}"
 

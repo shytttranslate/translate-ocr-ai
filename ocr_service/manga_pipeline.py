@@ -72,7 +72,7 @@ class MangaOcrWrapper:
                 return
             log.info("manga_ocr_initializing")
             from manga_ocr import MangaOcr  # type: ignore[import-not-found]
-            # GPU mode — torch 2.11+cu130 work tốt trên Blackwell SM 12.0 (khác PaddleOCR cu126).
+            # GPU mode — torch 2.11+cu130 work trên Blackwell SM 12.0.
             # Per-line inference 13-24ms GPU vs 50-200ms CPU (5-10x speedup), VRAM ~430MB.
             # Override bằng env PADDLEOCR_MANGAOCR_CPU=1 nếu cần fallback.
             import os

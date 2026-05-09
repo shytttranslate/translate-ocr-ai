@@ -82,10 +82,12 @@ if [[ ! -d "$VENV_API" ]]; then
 fi
 VIRTUAL_ENV="$VENV_API" uv pip install --upgrade pip wheel setuptools
 VIRTUAL_ENV="$VENV_API" uv pip install -r translate_service/requirements.txt
-# PaddleOCR v3 (PP-OCRv5). paddlepaddle GPU/CPU phụ thuộc image.
-# Vast.ai nodes có CUDA → ưu tiên GPU; fallback CPU nếu pip không tìm thấy wheel GPU.
-if ! VIRTUAL_ENV="$VENV_API" uv pip install "paddlepaddle-gpu>=3.0.0,<4.0" 2>/dev/null; then
-    echo "    paddlepaddle-gpu fail → fallback CPU"
+# PaddleOCR v3 (PP-OCRv5). paddlepaddle-gpu cu130 wheel có SM 12.0 (Blackwell)
+# kernel — KHÔNG dùng PyPI default (chỉ có cu126, không support SM 12.0).
+# Index Paddle: https://www.paddlepaddle.org.cn/packages/stable/cu130/
+if ! VIRTUAL_ENV="$VENV_API" uv pip install "paddlepaddle-gpu>=3.3.1,<4.0" \
+        --index-url https://www.paddlepaddle.org.cn/packages/stable/cu130/ 2>/dev/null; then
+    echo "    paddlepaddle-gpu cu130 fail → fallback CPU"
     VIRTUAL_ENV="$VENV_API" uv pip install "paddlepaddle>=3.0.0,<4.0"
 fi
 VIRTUAL_ENV="$VENV_API" uv pip install "paddleocr>=3.0.0,<4.0"
