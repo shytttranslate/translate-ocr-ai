@@ -103,6 +103,15 @@ class OcrRequest(BaseModel):
             "rtl = phải→trái (manga JP, Arabic), auto = tự detect theo aspect ratio + CJK ratio."
         ),
     )
+    mode: Literal["general", "manga"] = Field(
+        default="general",
+        description=(
+            "general (default) = PaddleOCR pipeline cho document/screenshot.\n"
+            "manga = specialized pipeline cho comic/manga JP: PaddleOCR detection + "
+            "manga-ocr recognition (kha-white) + bubble clustering + RTL reading order. "
+            "Khi mode=manga, lang/level/reading_order được override (lang=japan, RTL)."
+        ),
+    )
     request_id: str | None = Field(default=None, description="Trace từ API gateway")
 
     @model_validator(mode="after")
@@ -478,6 +487,95 @@ def _build_paragraphs_payload(
     return payload, resolved, full_text_paragraphs
 
 
+async def _run_manga_ocr(image_bytes: bytes, request_id: str) -> OcrResponse:
+    """Manga pipeline: PaddleOCR det + manga-ocr rec + bubble clustering + RTL sort."""
+    from manga_pipeline import run_manga_pipeline
+
+    # Cache key riêng cho manga mode
+    cache_key = _cache_key(image_bytes, "mode=manga")
+    cached = _cache_get(cache_key)
+    if cached is not None:
+        log.info("ocr_cache_hit_manga request_id=%s", request_id)
+        return OcrResponse(
+            request_id=request_id,
+            processing_time_ms=cached["processing_time_ms"],
+            lang="japan",
+            detected_lang="japan",
+            image_width=cached["image_width"],
+            image_height=cached["image_height"],
+            full_text=cached["full_text"],
+            text_blocks=[
+                OcrTextBlock(text=b["text"], confidence=b["confidence"], bbox=b["bbox"])
+                for b in cached["text_blocks"]
+            ],
+            paragraphs=[OcrParagraphPayload(**p) for p in cached["paragraphs"]],
+            reading_order="rtl",
+        )
+
+    engine: OcrEngine = app.state.engine
+    started = time.perf_counter()
+    try:
+        blocks, bubbles, width, height = await run_manga_pipeline(
+            image_bytes=image_bytes,
+            engine=engine,
+            use_manga_ocr_for_recognition=True,
+        )
+    except Exception as exc:
+        log.exception("manga_pipeline_failed request_id=%s", request_id)
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=f"Manga pipeline lỗi: {exc!s}"[:500],
+        ) from exc
+
+    elapsed_ms = int((time.perf_counter() - started) * 1000)
+    paragraphs_payload = [
+        {
+            "text": b.text,
+            "bbox": b.bbox,
+            "block_indices": b.block_indices,
+            "avg_confidence": b.avg_confidence,
+            "line_count": b.line_count,
+        }
+        for b in bubbles
+    ]
+    full_text = "\n\n".join(b.text for b in bubbles)
+
+    log.info(
+        "manga_ocr_ok request_id=%s n_lines=%d n_bubbles=%d size=%dx%d elapsed=%dms",
+        request_id, len(blocks), len(bubbles), width, height, elapsed_ms,
+    )
+
+    text_blocks_payload = [
+        {"text": b.text, "confidence": b.confidence, "bbox": b.bbox}
+        for b in blocks
+    ]
+    response_payload = {
+        "processing_time_ms": elapsed_ms,
+        "image_width": width,
+        "image_height": height,
+        "full_text": full_text,
+        "text_blocks": text_blocks_payload,
+        "paragraphs": paragraphs_payload,
+    }
+    _cache_put(cache_key, response_payload)
+
+    return OcrResponse(
+        request_id=request_id,
+        processing_time_ms=elapsed_ms,
+        lang="japan",
+        detected_lang="japan",
+        image_width=width,
+        image_height=height,
+        full_text=full_text,
+        text_blocks=[
+            OcrTextBlock(text=b.text, confidence=b.confidence, bbox=b.bbox)
+            for b in blocks
+        ],
+        paragraphs=[OcrParagraphPayload(**p) for p in paragraphs_payload],
+        reading_order="rtl",
+    )
+
+
 async def _run_ocr(
     image_bytes: bytes,
     lang: str,
@@ -485,15 +583,49 @@ async def _run_ocr(
     request_id: str,
     merge_paragraphs: bool = True,
     reading_order: str = "auto",
+    mode: str = "general",
 ) -> OcrResponse:
     """Logic OCR chính — share giữa endpoint /v1/ocr (JSON) và /v1/ocr/upload (multipart)."""
+    # Mode = manga route sang specialized pipeline (manga-ocr + bubble clustering + RTL).
+    if mode == "manga":
+        return await _run_manga_ocr(image_bytes, request_id)
+
     if lang not in SUPPORTED_LANGS:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=f"lang '{lang}' không hợp lệ. Cho phép: {sorted(SUPPORTED_LANGS)}",
         )
 
+    # Guard: PaddleOCR `predict(return_word_box=True)` crash worker khi ảnh > ~1.5M pixels
+    # (test xác nhận: 1920x1080 = 2M crash, 800x200 = 160K OK).
+    # Nếu user yêu cầu level=word mà ảnh quá lớn → degrade về block + log warning.
+    # Sau khi resize MAX_DIMENSION 1600, ảnh max là 1600x1200 = 1.92M pixels → still risky.
+    # Pixel-count guard chính xác hơn dimension guard.
     return_word_box = level == "word"
+    if return_word_box:
+        try:
+            # Inspect dim mà không load full ảnh vào memory (PIL header check)
+            import io
+            from PIL import Image as _PILImage
+            with _PILImage.open(io.BytesIO(image_bytes)) as _probe:
+                w0, h0 = _probe.size
+            # Tính dim sau resize MAX_IMAGE_DIMENSION
+            from engine import MAX_IMAGE_DIMENSION
+            max_dim = max(w0, h0)
+            if max_dim > MAX_IMAGE_DIMENSION:
+                scale = MAX_IMAGE_DIMENSION / max_dim
+                pixels_after = int(w0 * scale) * int(h0 * scale)
+            else:
+                pixels_after = w0 * h0
+            if pixels_after > 1_500_000:
+                log.warning(
+                    "word_level_degraded request_id=%s reason=image_too_large size=%dx%d pixels_after_resize=%d",
+                    request_id, w0, h0, pixels_after,
+                )
+                return_word_box = False
+                level = "block"  # phản ánh đúng level thực tế trong response/cache
+        except Exception as exc:  # noqa: BLE001 — guard không được fail request
+            log.warning("word_level_guard_failed request_id=%s error=%s", request_id, exc)
 
     # Cache key bao gồm cả merge config — cùng ảnh nhưng khác config phải tính lại merger.
     cache_key = _cache_key(
@@ -637,6 +769,7 @@ async def ocr_endpoint(req: OcrRequest) -> OcrResponse:
         image_bytes, req.lang, req.level, request_id,
         merge_paragraphs=req.merge_paragraphs,
         reading_order=req.reading_order,
+        mode=req.mode,
     )
 
 
@@ -647,6 +780,7 @@ async def ocr_upload_endpoint(
     level: Literal["block", "word"] = Form("block"),
     merge_paragraphs: bool = Form(True),
     reading_order: Literal["ltr", "rtl", "auto"] = Form("auto"),
+    mode: Literal["general", "manga"] = Form("general"),
     request_id: str | None = Form(None),
 ) -> OcrResponse:
     """OCR qua multipart upload — phù hợp cho web tool drag-drop hoặc CLI curl -F."""
@@ -665,4 +799,5 @@ async def ocr_upload_endpoint(
         image_bytes, lang, level, rid,
         merge_paragraphs=merge_paragraphs,
         reading_order=reading_order,
+        mode=mode,
     )

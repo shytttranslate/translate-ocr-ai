@@ -527,6 +527,19 @@
     </div>
 
     <div>
+      <label class="field-label">Pipeline mode</label>
+      <div class="seg">
+        <input type="radio" name="mode" id="modeGeneral" value="general" checked />
+        <label for="modeGeneral">General</label>
+        <input type="radio" name="mode" id="modeManga" value="manga" />
+        <label for="modeManga">Manga</label>
+      </div>
+      <p style="font-size:11px;color:var(--muted);margin:4px 2px 0;">
+        General = PaddleOCR. Manga = manga-ocr + bubble clustering + RTL (lang/level/order tự override).
+      </p>
+    </div>
+
+    <div>
       <label class="field-label">Detection level (server)</label>
       <div class="seg">
         <input type="radio" name="level" id="levelBlock" value="block" />
@@ -744,6 +757,7 @@ async function runOcr() {
   const level = document.querySelector('input[name="level"]:checked').value;
   const reading_order = document.querySelector('input[name="order"]:checked').value;
   const merge_paragraphs = $("mergePara").checked;
+  const mode = document.querySelector('input[name="mode"]:checked').value;
 
   if (activeTab === "url" && !imageUrlInput.value.trim()) { showError("Nhập Image URL"); return; }
   if (activeTab === "file" && !selectedFile) { showError("Chọn file ảnh"); return; }
@@ -765,7 +779,7 @@ async function runOcr() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           image_url: imageUrlInput.value.trim(),
-          lang, level, merge_paragraphs, reading_order,
+          lang, level, merge_paragraphs, reading_order, mode,
         }),
       });
     } else {
@@ -774,6 +788,7 @@ async function runOcr() {
       fd.append("lang", lang);
       fd.append("level", level);
       fd.append("merge_paragraphs", String(merge_paragraphs));
+      fd.append("mode", mode);
       fd.append("reading_order", reading_order);
       resp = await fetch(`${apiUrl}/v1/ocr/upload`, { method: "POST", body: fd });
       imageObjectUrl = URL.createObjectURL(selectedFile);

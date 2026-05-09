@@ -33,6 +33,9 @@ export PADDLEOCR_MAX_DIMENSION="${PADDLEOCR_MAX_DIMENSION:-1600}"
 export PADDLEOCR_USE_TEXTLINE_ORI="${PADDLEOCR_USE_TEXTLINE_ORI:-0}"
 # LRU cache size — repeat request cùng ảnh + lang trả ngay (ms).
 export PADDLEOCR_CACHE_SIZE="${PADDLEOCR_CACHE_SIZE:-256}"
+# Confidence threshold — bỏ text block có conf < threshold (default 0.3 = 30%).
+# Tăng (vd 0.5) nếu muốn lọc khắt khe hơn, giảm 0 nếu muốn giữ mọi detection.
+export PADDLEOCR_MIN_CONFIDENCE="${PADDLEOCR_MIN_CONFIDENCE:-0.3}"
 
 # Workers: paddle CPU + fork CÓ ISSUE — đôi khi worker crash khi xử lý ảnh lớn
 # (PIL/numpy/paddle Conv kernel race condition). Giảm xuống 1 cho stable.

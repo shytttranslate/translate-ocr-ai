@@ -83,11 +83,26 @@ SUPPORTED_LANGS = frozenset(
 )
 
 AUTO_DEFAULT_CONF_THRESHOLD = 0.85
-AUTO_DEFAULT_LANG = "en"
-# Fallback chain — chỉ 3 lang phổ biến nhất (CJK). Trade-off: ngôn ngữ hiếm (ar/hi/th)
-# auto detect kém, nhưng tránh worst-case load engine 30s/cái lần đầu spike latency.
-# User test ngôn ngữ hiếm nên truyền lang code rõ ràng thay vì auto.
-AUTO_FALLBACK_LANGS = ("ch", "japan", "korean")
+# Default model PP-OCRv5_mobile_rec cover SẴN: ch + chinese_cht + en + japan trong 1 model.
+# Dùng "ch" làm pass 1 → 1 lần OCR cover được ~80% case (Á + Anh). Trước đây dùng "en"
+# (model en_PP-OCRv5_mobile_rec) chỉ cover ASCII → ảnh CJK luôn fail pass 1, ảnh Việt mất dấu.
+AUTO_DEFAULT_LANG = "ch"
+
+# Map Unicode script (detect được từ text pass 1) → lang code phù hợp cho pass 2.
+# Pass 2 chỉ cần CHỈ chạy 1 lang đúng → tiết kiệm 2/3 compute so với gather 3 lang cứng.
+SCRIPT_TO_LANG: dict[str, str] = {
+    "latin_ext": "vi",       # latin_PP-OCRv5_mobile_rec cover Việt + 46 lang Latin
+    "cyrillic": "ru",        # eslav_PP-OCRv5_mobile_rec
+    "korean": "korean",      # korean_PP-OCRv5_mobile_rec
+    "arabic": "ar",          # arabic_PP-OCRv5_mobile_rec
+    "devanagari": "hi",      # devanagari_PP-OCRv5_mobile_rec
+    "thai": "th",
+    "greek": "el",
+    "tamil": "ta",
+    "telugu": "te",
+}
+# Script mà default model "ch" đã handle native — không cần fallback.
+DEFAULT_NATIVE_SCRIPTS = frozenset({"ascii", "cjk", "japanese_kana"})
 
 POOL_SIZE = int(os.environ.get("PADDLEOCR_POOL_SIZE", "8"))
 PADDLEOCR_DEVICE = os.environ.get("PADDLEOCR_DEVICE", "auto")
@@ -98,6 +113,67 @@ USE_MOBILE_MODEL = os.environ.get("PADDLEOCR_USE_MOBILE", "0") == "1"
 MAX_IMAGE_DIMENSION = int(os.environ.get("PADDLEOCR_MAX_DIMENSION", "1600"))
 # textline orientation classification — cần khi text xoay 90/180/270°. Tắt nhanh hơn ~10-15%.
 USE_TEXTLINE_ORIENTATION = os.environ.get("PADDLEOCR_USE_TEXTLINE_ORI", "0") == "1"
+# Filter nhiễu: bỏ text block có confidence < threshold. Default 0.3 (30%).
+# Override bằng env PADDLEOCR_MIN_CONFIDENCE (giá trị 0.0-1.0).
+MIN_CONFIDENCE = float(os.environ.get("PADDLEOCR_MIN_CONFIDENCE", "0.3"))
+
+
+def _detect_scripts(text: str) -> set[str]:
+    """Phân loại Unicode script của text → set các script gặp được.
+
+    Dùng cho auto-detect lang: sau pass 1 OCR, scan text decode ra để biết
+    có script nào nằm ngoài coverage của default model không.
+    """
+    scripts: set[str] = set()
+    for ch in text:
+        cp = ord(ch)
+        if cp < 0x80:
+            scripts.add("ascii")
+        elif 0x0080 <= cp <= 0x024F:
+            # Latin-1 supplement + Latin Extended A/B (dấu Việt, Pháp, Đức...)
+            scripts.add("latin_ext")
+        elif 0x0370 <= cp <= 0x03FF:
+            scripts.add("greek")
+        elif 0x0400 <= cp <= 0x04FF:
+            scripts.add("cyrillic")
+        elif 0x0590 <= cp <= 0x05FF:
+            scripts.add("hebrew")
+        elif 0x0600 <= cp <= 0x06FF or 0x0750 <= cp <= 0x077F:
+            scripts.add("arabic")
+        elif 0x0900 <= cp <= 0x097F:
+            scripts.add("devanagari")
+        elif 0x0B80 <= cp <= 0x0BFF:
+            scripts.add("tamil")
+        elif 0x0C00 <= cp <= 0x0C7F:
+            scripts.add("telugu")
+        elif 0x0E00 <= cp <= 0x0E7F:
+            scripts.add("thai")
+        elif 0x3040 <= cp <= 0x30FF or 0x31F0 <= cp <= 0x31FF:
+            # Hiragana + Katakana — model "ch" cover được
+            scripts.add("japanese_kana")
+        elif 0x4E00 <= cp <= 0x9FFF or 0x3400 <= cp <= 0x4DBF:
+            scripts.add("cjk")
+        elif 0xAC00 <= cp <= 0xD7AF:
+            scripts.add("korean")
+    return scripts
+
+
+def _choose_fallback_lang(scripts: set[str]) -> str | None:
+    """Trả về lang code cho pass 2 dựa script chiếm ưu thế ngoài CJK/ASCII.
+
+    Trả None nếu không có script nào cần fallback.
+    Ưu tiên thứ tự: cyrillic > arabic > devanagari > thai > greek > tamil > telugu
+    > korean > latin_ext. (Latin extended ưu tiên cuối vì hay xuất hiện kèm CJK
+    trong document mix → tránh bias.)
+    """
+    priority = (
+        "cyrillic", "arabic", "devanagari", "thai",
+        "greek", "tamil", "telugu", "korean", "latin_ext",
+    )
+    for s in priority:
+        if s in scripts:
+            return SCRIPT_TO_LANG.get(s)
+    return None
 
 
 @dataclass
@@ -240,6 +316,9 @@ class OcrEngine:
                 if not t:
                     continue
                 conf = float(scores[i]) if i < len(scores) else 0.0
+                # Lọc nhiễu: bỏ block có confidence < threshold
+                if conf < MIN_CONFIDENCE:
+                    continue
                 if i < len(polys):
                     poly = polys[i]
                     bbox = [[int(round(float(p[0]))), int(round(float(p[1])))] for p in poly]
@@ -280,6 +359,9 @@ class OcrEngine:
             if not text:
                 continue
             conf = float(text_conf[1])
+            # Lọc nhiễu: bỏ block có confidence < threshold
+            if conf < MIN_CONFIDENCE:
+                continue
             bbox_int = [[int(round(p[0])), int(round(p[1]))] for p in bbox_pts]
             blocks.append(OcrBlock(text=text, confidence=conf, bbox=bbox_int))
         return blocks
@@ -329,38 +411,80 @@ class OcrEngine:
     async def ocr_auto(
         self, image_bytes: bytes, return_word_box: bool = False,
     ) -> tuple[list[OcrBlock], int, int, str]:
+        """Auto-detect lang — 2-pass smart fallback.
+
+        Pass 1: chạy default model "ch" (cover ch+chinese_cht+en+japan).
+        Pass 2: nếu text pass 1 chứa script ngoài CJK/Latin-ASCII → chỉ chạy 1 lang
+                fallback đúng (latin/cyrillic/korean/arabic/...) thay vì gather 3 lang.
+
+        Lưu ý: heuristic CV pre-detect (Option A) đã thử nhưng KHÔNG ĐÁNG TIN — Latin
+        (Việt/Pháp) và CJK có feature pixel chồng nhau, font thin bị tách stroke. Bỏ.
+        Nếu tương lai cần tăng tốc, cần CNN classifier (~5MB MobileNet finetune) thay vì
+        pure heuristic.
+        """
         default_blocks, width, height = await self.ocr(image_bytes, AUTO_DEFAULT_LANG, return_word_box)
         default_avg = (
             sum(b.confidence for b in default_blocks) / len(default_blocks)
             if default_blocks else 0.0
         )
-        if default_blocks and default_avg >= AUTO_DEFAULT_CONF_THRESHOLD:
-            log.info("auto_pass1_win lang=%s conf=%.3f n=%d",
-                     AUTO_DEFAULT_LANG, default_avg, len(default_blocks))
+        full_text = "".join(b.text for b in default_blocks)
+        scripts_seen = _detect_scripts(full_text)
+        unsupported = scripts_seen - DEFAULT_NATIVE_SCRIPTS
+
+        # Shortcut 1: pass 1 confident + chỉ chứa script default cover → return ngay
+        if default_blocks and default_avg >= AUTO_DEFAULT_CONF_THRESHOLD and not unsupported:
+            log.info(
+                "auto_pass1_win lang=%s conf=%.3f n=%d scripts=%s",
+                AUTO_DEFAULT_LANG, default_avg, len(default_blocks), scripts_seen,
+            )
             return default_blocks, width, height, AUTO_DEFAULT_LANG
 
-        log.info("auto_pass1_weak conf=%.3f n=%d → fallback CJK",
-                 default_avg, len(default_blocks))
+        # Shortcut 2: pass 1 không detect được gì (ảnh không có text) → return rỗng
+        if not default_blocks:
+            log.info("auto_pass1_empty — không phát hiện text")
+            return default_blocks, width, height, AUTO_DEFAULT_LANG
 
-        async def _try(lang: str) -> tuple[str, list[OcrBlock], float]:
-            try:
-                blocks, _, _ = await self.ocr(image_bytes, lang, return_word_box)
-                avg = sum(b.confidence for b in blocks) / len(blocks) if blocks else 0.0
-                return lang, blocks, avg
-            except Exception as exc:  # noqa: BLE001
-                log.warning("auto_fallback_failed lang=%s error=%s", lang, exc)
-                return lang, [], 0.0
+        # Chọn fallback dựa script lớn nhất ngoài CJK/ASCII
+        fallback_lang = _choose_fallback_lang(scripts_seen)
+        if fallback_lang is None:
+            # Pass 1 conf thấp nhưng không detect script lạ — có thể nhiễu, return luôn
+            log.info(
+                "auto_pass1_low_conf_no_fb conf=%.3f n=%d scripts=%s",
+                default_avg, len(default_blocks), scripts_seen,
+            )
+            return default_blocks, width, height, AUTO_DEFAULT_LANG
 
-        results = await asyncio.gather(*[_try(lang) for lang in AUTO_FALLBACK_LANGS])
-
-        import math
-        candidates = [(AUTO_DEFAULT_LANG, default_blocks, default_avg)] + list(results)
-        best_lang, best_blocks, best_avg = max(
-            candidates, key=lambda x: x[2] * math.log1p(len(x[1])),
+        log.info(
+            "auto_pass2_targeted lang=%s scripts=%s pass1_conf=%.3f",
+            fallback_lang, scripts_seen, default_avg,
         )
-        log.info("auto_pass2_win lang=%s conf=%.3f n=%d",
-                 best_lang, best_avg, len(best_blocks))
-        return best_blocks, width, height, best_lang
+        try:
+            fb_blocks, _, _ = await self.ocr(image_bytes, fallback_lang, return_word_box)
+        except Exception as exc:  # noqa: BLE001
+            log.warning("auto_fallback_failed lang=%s error=%s", fallback_lang, exc)
+            return default_blocks, width, height, AUTO_DEFAULT_LANG
+
+        fb_avg = (
+            sum(b.confidence for b in fb_blocks) / len(fb_blocks) if fb_blocks else 0.0
+        )
+
+        # So sánh score = avg_conf × log1p(n) — log1p ưu tiên kết quả nhiều block hợp lệ
+        import math
+        default_score = default_avg * math.log1p(len(default_blocks))
+        fb_score = fb_avg * math.log1p(len(fb_blocks))
+
+        if fb_score > default_score:
+            log.info(
+                "auto_pass2_win lang=%s conf=%.3f n=%d (vs default conf=%.3f n=%d)",
+                fallback_lang, fb_avg, len(fb_blocks), default_avg, len(default_blocks),
+            )
+            return fb_blocks, width, height, fallback_lang
+
+        log.info(
+            "auto_pass2_keep_default conf=%.3f n=%d (fb_lang=%s lost: conf=%.3f n=%d)",
+            default_avg, len(default_blocks), fallback_lang, fb_avg, len(fb_blocks),
+        )
+        return default_blocks, width, height, AUTO_DEFAULT_LANG
 
     async def warm_up(self, langs: list[str]) -> None:
         for lang in langs:
