@@ -96,15 +96,20 @@ TESSERACT_OSD_CONF_THRESHOLD = float(os.environ.get("OSD_CONF_THRESHOLD", "1.5")
 # Map Tesseract OSD script → PaddleOCR PP-OCRv5 lang code.
 # OSD label: xem `osd.traineddata` (Google Research). Một số script Tesseract trả không có
 # trong PaddleOCR (Hebrew, Bengali, Tibetan, Mongolian, ...) → fallback về default `ch`.
+# Map OSD script → PaddleOCR lang code dùng để LOAD MODEL.
+# Tất cả CJK variants (Han / HanS / HanT / Japanese / *_vert) đều dùng model `ch`
+# (PP-OCRv5_mobile_rec cover hết) → share pool, không tốn VRAM. `detected_lang`
+# trong response sẽ được refine sau recognition (xem _refine_cjk_lang).
 OSD_SCRIPT_TO_PADDLE_LANG: dict[str, str] = {
     "Latin": "vi",                # latin_PP-OCRv5_mobile_rec cover 47 lang Latin extended
     "Cyrillic": "ru",             # eslav_PP-OCRv5_mobile_rec
-    "Han": "ch",                  # PP-OCRv5_mobile_rec cover ch + chinese_cht + en + japan
+    # CJK variants → load model `ch`, refine detected_lang sau recognition
+    "Han": "ch",
     "HanS": "ch",
-    "HanT": "chinese_cht",
+    "HanT": "ch",
     "HanS_vert": "ch",
-    "HanT_vert": "chinese_cht",
-    "Japanese": "ch",             # ch model cover japan native
+    "HanT_vert": "ch",
+    "Japanese": "ch",
     "Japanese_vert": "ch",
     "Korean": "korean",           # korean_PP-OCRv5_mobile_rec
     "Korean_vert": "korean",
@@ -116,6 +121,10 @@ OSD_SCRIPT_TO_PADDLE_LANG: dict[str, str] = {
     # Telugu OSD chưa có training data riêng — Tesseract OSD label dùng "Latin" cho Telugu là chuyện thường.
     # → User truyền lang=te explicit nếu cần. Auto sẽ map về vi (latin) — sai cho Telugu nhưng rare.
 }
+
+# OSD-trả Traditional Chinese → detected_lang="chinese_cht" trừ khi recognition
+# output có kana (→ japan) — refine logic ở `_refine_lang_from_text`.
+_HANT_OSD_SCRIPTS = frozenset({"HanT", "HanT_vert"})
 
 # === Legacy Unicode script → lang (giữ lại làm sanity-check post-recognition) ===
 SCRIPT_TO_LANG: dict[str, str] = {
@@ -497,6 +506,109 @@ class OcrEngine:
                         w.bbox = [[int(round(p[0] * inv)), int(round(p[1] * inv))] for p in w.bbox]
         return blocks, width, height
 
+    @staticmethod
+    def _refine_lang_from_text(
+        blocks: list[OcrLine],
+        osd_script: str | None,
+        osd_conf: float,
+        fallback_lang: str,
+    ) -> str:
+        """Refine `detected_lang` dựa Unicode range của text đã recognize.
+
+        Recognition output là source-of-truth tin cậy hơn OSD pre-step:
+            - Hiragana / katakana → "japan".
+            - CJK ideographs (no kana) → "ch" / "chinese_cht" tùy OSD signal.
+            - Cyrillic / Korean / Arabic / Thai / Devanagari / Greek / Tamil
+              → lang tương ứng (PaddleOCR group đó).
+            - Latin extended (U+0080–U+024F) → "vi" (cover 47 lang Latin có dấu).
+            - Pure ASCII letter → "en".
+            - Không có signal nào → giữ `fallback_lang` (lang đã dùng để recognize).
+        """
+        text = "".join(b.text for b in blocks)
+        if not text:
+            return fallback_lang
+
+        has_hiragana = False
+        has_katakana = False
+        has_cjk = False
+        has_korean = False
+        has_cyrillic = False
+        has_arabic = False
+        has_thai = False
+        has_devanagari = False
+        has_greek = False
+        has_tamil = False
+        has_telugu = False
+        has_latin_ext = False
+        has_ascii_letter = False
+
+        for c in text:
+            cp = ord(c)
+            if cp < 0x80:
+                if c.isalpha():
+                    has_ascii_letter = True
+            elif 0x0080 <= cp <= 0x024F:
+                has_latin_ext = True
+            elif 0x0370 <= cp <= 0x03FF:
+                has_greek = True
+            elif 0x0400 <= cp <= 0x04FF:
+                has_cyrillic = True
+            elif 0x0600 <= cp <= 0x06FF or 0x0750 <= cp <= 0x077F:
+                has_arabic = True
+            elif 0x0900 <= cp <= 0x097F:
+                has_devanagari = True
+            elif 0x0B80 <= cp <= 0x0BFF:
+                has_tamil = True
+            elif 0x0C00 <= cp <= 0x0C7F:
+                has_telugu = True
+            elif 0x0E00 <= cp <= 0x0E7F:
+                has_thai = True
+            elif 0x3040 <= cp <= 0x309F:
+                has_hiragana = True
+            elif 0x30A0 <= cp <= 0x30FF:
+                has_katakana = True
+            elif (0x4E00 <= cp <= 0x9FFF) or (0x3400 <= cp <= 0x4DBF):
+                has_cjk = True
+            elif 0xAC00 <= cp <= 0xD7AF:
+                has_korean = True
+
+        # CJK family disambiguation (kana > kanji-only > traditional > simplified)
+        if has_hiragana or has_katakana:
+            return "japan"
+        if has_cjk:
+            if osd_script in _HANT_OSD_SCRIPTS:
+                return "chinese_cht"
+            if osd_script in ("Japanese", "Japanese_vert") and osd_conf >= 2.5:
+                return "japan"
+            return "ch"
+
+        # Non-CJK scripts (priority: korean > cyrillic > arabic > devanagari > thai
+        # > greek > tamil > telugu — chữ "đặc thù" trước Latin để tránh nhiễu).
+        if has_korean:
+            return "korean"
+        if has_cyrillic:
+            return "ru"
+        if has_arabic:
+            return "ar"
+        if has_devanagari:
+            return "hi"
+        if has_thai:
+            return "th"
+        if has_greek:
+            return "el"
+        if has_tamil:
+            return "ta"
+        if has_telugu:
+            return "te"
+
+        # Latin family: có dấu mở rộng → vi (latin model 47 lang); pure ASCII → en
+        if has_latin_ext:
+            return "vi"
+        if has_ascii_letter:
+            return "en"
+
+        return fallback_lang
+
     async def ocr_auto(
         self, image_bytes: bytes, return_word_box: bool = False,
     ) -> tuple[list[OcrLine], int, int, str]:
@@ -507,6 +619,8 @@ class OcrEngine:
             2. Tesseract OSD trên ảnh đã resize → (script, conf).
             3. Map script → PaddleOCR lang nếu conf đạt threshold.
             4. Recognition full với lang đã chọn.
+            5. CJK refinement: nếu OSD trả Han/Japanese, dùng Unicode range của
+               recognition output để chốt detected_lang chính xác (ch vs japan).
 
         Fallback ladder:
             - Tesseract unavailable / OSD throw error → default `ch`.
@@ -555,7 +669,21 @@ class OcrEngine:
             else:
                 raise
 
-        return blocks, width, height, chosen_lang
+        # Refine detected_lang dựa Unicode range của text recognized — source of truth
+        # tin cậy hơn OSD pre-step. Cover toàn bộ case:
+        #   - CJK confusion (Han↔Japanese)
+        #   - OSD low-conf fallback `ch` nhưng text thực tế là English / Cyrillic / ...
+        #   - OSD trả Latin → chosen_lang `vi`, nhưng text pure ASCII → "en"
+        reported_lang = self._refine_lang_from_text(
+            blocks, chosen_script, osd_conf, chosen_lang,
+        )
+        if reported_lang != chosen_lang:
+            log.info(
+                "auto_lang_refined osd=%s engine_lang=%s reported_lang=%s (conf=%.2f)",
+                chosen_script, chosen_lang, reported_lang, osd_conf,
+            )
+
+        return blocks, width, height, reported_lang
 
     async def warm_up(self, langs: list[str]) -> None:
         for lang in langs:
