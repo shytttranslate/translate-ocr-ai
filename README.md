@@ -1,6 +1,6 @@
-# VietByte AI API — Translation + Dictionary + OCR
+# VietByte AI API — Translation + Dictionary + OCR + TTS
 
-Service unified cho **Dịch thuật** (vLLM + `Qwen3-14B-AWQ`), **Từ điển song ngữ** (cùng model), và **OCR** (PaddleOCR v5 chạy CPU).
+Service unified cho **Dịch thuật** (vLLM + `Qwen3-14B-AWQ`), **Từ điển song ngữ** (cùng model), **OCR** (PaddleOCR PP-OCRv5 + manga-ocr trên GPU), và **TTS** (Chatterbox Multilingual 0.5B trên GPU).
 
 ## Kiến trúc
 
@@ -24,20 +24,44 @@ Service unified cho **Dịch thuật** (vLLM + `Qwen3-14B-AWQ`), **Từ điển 
 
 ## Endpoint
 
-| Method | Path | Mục đích |
-|---|---|---|
-| GET | `/` | Banner |
-| GET | `/healthz/live` | Liveness probe (chỉ check process) |
-| GET | `/healthz/ready` | Readiness probe (deep check vLLM bằng inference call) |
-| GET | `/healthz/startup` | Startup probe (model loaded chưa) |
-| GET | `/v1/health` | Alias public của readiness |
-| GET | `/v1/models` | Translator fingerprint + OCR engine info |
-| GET | `/v1/metrics` | Prometheus exposition |
-| POST | `/v1/translate` | Dịch text đơn / batch |
-| POST | `/v1/json` | Dịch mảng string, output mảng string cùng thứ tự |
-| POST | `/v1/dict` | Tra từ điển song ngữ (Cambridge-style) |
-| POST | `/v1/ocr` | OCR ảnh base64, trả text blocks + bbox |
-| GET | `/docs` | Swagger UI |
+4 service độc lập (KHÔNG có gateway proxy), mỗi service port riêng:
+
+| Service | Port | Endpoint chính | Mục đích |
+|---|---|---|---|
+| vLLM translator | 9001 | `/v1/chat/completions` | Internal — Qwen3-14B-AWQ trên GPU |
+| Translate | 9002 | `POST /v1/translate`, `/v1/json`, `/v1/dict` | Dịch + từ điển (gọi vLLM) |
+| OCR | 9003 | `POST /v1/ocr`, `/v1/ocr/upload`, `GET /v1/languages` | PaddleOCR PP-OCRv5 + manga-ocr (mode=manga) |
+| TTS | 9004 | `POST /v1/tts`, `GET /v1/voices`, `GET /v1/languages` | Chatterbox Multilingual 0.5B — 23 ngôn ngữ |
+
+Mỗi service đều có `GET /healthz/live` + `GET /healthz/ready` (deep) + `GET /v1/metrics` (Prometheus).
+
+### TTS — Chatterbox Multilingual 0.5B
+
+- **Model**: [resemble-ai/chatterbox](https://github.com/resemble-ai/chatterbox) (MIT) — 0.5B Llama backbone + audio diffusion decoder.
+- **Ngôn ngữ (23)**: ar, da, de, el, en, es, fi, fr, he, hi, it, ja, ko, ms, nl, no, pl, pt, ru, sv, sw, tr, zh. **KHÔNG có Vietnamese.** Request `language_id=vi` → 422.
+- **Output**: JSON với `audio_base64` (WAV PCM 16-bit, **24kHz mono**). Decode:
+  ```bash
+  jq -r .audio_base64 response.json | base64 -d > out.wav
+  ```
+- **Voice (7)**: preset profile từ [tts_service/voices/voices.json](tts_service/voices/voices.json). Client chọn `voice_id`:
+  - `default` — giọng mặc định Chatterbox (không audio prompt)
+  - **3 giọng nam** (LibriTTS-R, F0 spread): `male_deep` (96Hz, bass), `male_warm` (141Hz, baritone), `male_bright` (157Hz, tenor)
+  - **3 giọng nữ** (LibriTTS-R, F0 spread): `female_warm` (186Hz, alto), `female_clear` (220Hz, mezzo), `female_bright` (245Hz, soprano)
+  - Voice prompts (.wav 24kHz mono, 6-12s) được commit vào repo (~3MB tổng) → deploy server khác chỉ cần rsync.
+  - Regen/đổi speaker bằng [scripts/build_voice_pack.py](scripts/build_voice_pack.py) — stream LibriTTS-R, F0 detection, verify Chatterbox clone OK.
+- **Watermark**: mọi audio đều có Perth watermark imperceptible (responsible AI, không gỡ).
+- **VRAM**: ~6-9GB FP16. Concurrency=1 mặc định (model state share GPU).
+- **Generation params**: `exaggeration` (0-1, cường điệu), `cfg_weight` (0-1, CFG — cũng ảnh hưởng tempo: thấp=chậm/tự do, cao=bám voice prompt), `temperature` (0-2), `seed` (reproducible nếu set). Tool preview hiển thị `cfg_weight` với label **Speed** cho dễ hình dung. KHÔNG có speed param riêng — Chatterbox không hỗ trợ direct speed control, post-process pitch không tự nhiên cho speech nên đã bỏ.
+- **Auto-trim silence/noise**: Chatterbox đôi khi sinh `long_tail` (noise/silence đuôi sau câu — gặp ~65% request) → tạo cảm giác "rè rè". Server tự `librosa.effects.trim(top_db=35)` đầu+cuối audio sau generate. Đo trên 3 voice nữ/nam: noise đuôi từ 250-850ms giảm về <50ms. Tắt qua env `TTS_TRIM_SILENCE=false`.
+- **Text normalization (auto)**: Chatterbox không có normalizer built-in → server pre-process [tts_service/services/text_normalizer.py](tts_service/services/text_normalizer.py) qua `num2words`:
+  - Số: `1000` → `one thousand` (cover 23 ngôn ngữ; lang nào num2words thiếu thì fallback English)
+  - Currency prefix: `$1000` → `1000 dollars` (en/ja/zh/ko style)
+  - Currency suffix: `1000€` → `1000 euros` (fr/de/it/es style)
+  - Percent: `50%` → `50 percent` (per-locale)
+  - Decimal: `3.14` → `three point one four`
+  - Thousand separator: `1,234,567` → `1234567` → `one million two hundred thirty-four thousand…`
+  - Tắt qua env `TTS_NORMALIZE_NUMBERS=false` nếu input đã pre-normalized.
+- **Tool preview**: `GET /preview/` mount [tools/tts_preview/index.html](tools/tts_preview/index.html) — single-page UI để test API qua browser (audio player + history + curl preview).
 
 ## Yêu cầu hardware
 
@@ -84,10 +108,17 @@ curl -s -X POST http://localhost:9002/v1/dict \
     -H 'Content-Type: application/json' \
     -d '{"word":"freedom","native_lang":"en","target_lang":"vi"}' | jq
 
-# OCR (cần ảnh base64)
-curl -s -X POST http://localhost:9002/v1/ocr \
+# OCR (cần ảnh base64) — port 9003
+curl -s -X POST http://localhost:9003/v1/ocr \
     -H 'Content-Type: application/json' \
     -d "{\"image\":\"$(base64 -w0 < /path/to/image.png)\",\"lang\":\"auto\"}" | jq
+
+# TTS — port 9004 — Chatterbox EN
+curl -s -X POST http://localhost:9004/v1/tts \
+    -H 'Content-Type: application/json' \
+    -d '{"text":"Hello world","language_id":"en","voice_id":"default"}' \
+    | jq -r .audio_base64 | base64 -d > /tmp/tts.wav
+mpv /tmp/tts.wav   # hoặc: aplay /tmp/tts.wav
 ```
 
 Hoặc trên server:

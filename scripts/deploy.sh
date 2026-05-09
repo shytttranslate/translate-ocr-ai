@@ -14,6 +14,7 @@ set -euo pipefail
 ROOT="${VBK_ROOT:-/workspace/vbk-ai-server}"
 VENV_API="$ROOT/.venv-api"
 VENV_VLLM="$ROOT/.venv-vllm"
+VENV_TTS="$ROOT/.venv-tts"
 LOG_DIR="$ROOT/logs"
 RUN_DIR="$ROOT/run"
 DATA_DIR="$ROOT/data"
@@ -102,6 +103,57 @@ timer_start
     | grep -E "^\[|===" \
     || echo "    warm-up có cảnh báo nhưng không fail deploy"
 timer_end "paddleocr-warmup"
+
+# 2.7 Setup venv TTS + Chatterbox Multilingual 0.5B (Blackwell cu130)
+echo ""
+echo "[2.7/7] Setup .venv-tts + Chatterbox Multilingual 0.5B..."
+timer_start
+if [[ ! -d "$VENV_TTS" ]]; then
+    uv venv --python 3.12 "$VENV_TTS"
+fi
+VIRTUAL_ENV="$VENV_TTS" uv pip install --upgrade pip wheel setuptools
+
+# Torch cu130 — bám theo .venv-api hiện tại (manga-ocr 2.11+cu130). Server Blackwell SM 12.0.
+# Stable wheel: https://download.pytorch.org/whl/cu130. Fallback nightly nếu chưa có stable.
+if ! VIRTUAL_ENV="$VENV_TTS" uv pip install \
+        torch torchaudio \
+        --index-url https://download.pytorch.org/whl/cu130 2>/dev/null; then
+    echo "    torch cu130 stable fail → fallback nightly cu130"
+    VIRTUAL_ENV="$VENV_TTS" uv pip install --pre \
+        torch torchaudio \
+        --index-url https://download.pytorch.org/whl/nightly/cu130
+fi
+
+# Core API + Chatterbox runtime deps (transformers/diffusers/librosa/perth/num2words/...)
+VIRTUAL_ENV="$VENV_TTS" uv pip install -r tts_service/requirements.txt
+
+# chatterbox-tts package: PyPI primary, fallback git clone (PyPI v0.1.3+ flaky).
+if ! VIRTUAL_ENV="$VENV_TTS" uv pip install chatterbox-tts 2>/dev/null; then
+    echo "    chatterbox-tts PyPI fail → fallback git clone"
+    rm -rf "$ROOT/vendor/chatterbox"
+    mkdir -p "$ROOT/vendor"
+    git clone --depth 1 https://github.com/resemble-ai/chatterbox.git "$ROOT/vendor/chatterbox"
+    VIRTUAL_ENV="$VENV_TTS" uv pip install -e "$ROOT/vendor/chatterbox"
+fi
+
+# BUG PyPI: chatterbox-tts pin torch==2.6.0 (CPU build, không hỗ trợ Blackwell SM 12.0).
+# Sau khi chatterbox-tts cài xong, FORCE reinstall torch+torchaudio cu130 đè lên.
+# Verified: chatterbox vẫn import + chạy OK với torch 2.11+cu130 (transformers 5.x).
+echo "    [TTS] Force reinstall torch cu130 (chatterbox-tts ép downgrade về 2.6 CPU)..."
+VIRTUAL_ENV="$VENV_TTS" uv pip install --reinstall \
+    torch==2.11.0 torchaudio==2.11.0 \
+    --index-url https://download.pytorch.org/whl/cu130
+
+# Sanity check CUDA + GPU compute capability >= 9 (Blackwell SM 12.0 cần).
+"$VENV_TTS/bin/python" -c "
+import torch
+assert torch.cuda.is_available(), 'CUDA NOT AVAILABLE — kiểm tra driver Blackwell + torch wheel'
+cap = torch.cuda.get_device_capability()
+print(f'    [TTS] torch={torch.__version__} cuda={torch.version.cuda} sm={cap[0]}.{cap[1]} device={torch.cuda.get_device_name(0)}')
+assert cap[0] >= 9, f'GPU compute capability {cap[0]}.{cap[1]} < 9.0 — cần Blackwell SM 12.0 hoặc Ada SM 8.9+'
+"
+timer_end "venv-tts"
+echo "    venv-tts size: $(du -sh "$VENV_TTS" | awk '{print $1}')"
 
 # 3. Setup venv vLLM
 echo ""
@@ -204,11 +256,12 @@ while true; do
     sleep 5
 done
 
-# 7. Start OCR service + API gateway + smoke test
+# 7. Start OCR service + TTS service + API gateway + smoke test
 echo ""
-echo "[7/7] Start OCR service + API gateway (supervisord) + smoke test..."
+echo "[7/7] Start OCR + TTS service + API gateway (supervisord) + smoke test..."
 : > "$LOG_DIR/ocr.log"; : > "$LOG_DIR/ocr-err.log"
-: > "$LOG_DIR/api.log"; : > "$LOG_DIR/api-err.log"
+: > "$LOG_DIR/tts.log"; : > "$LOG_DIR/tts-err.log"
+: > "$LOG_DIR/translate.log"; : > "$LOG_DIR/translate-err.log"
 
 $SC start vbk-ai:vbk-ocr 2>&1 | head -5 || true
 echo "    Đợi OCR service ready (port 9003)..."
@@ -220,12 +273,22 @@ for i in $(seq 1 30); do
     sleep 2
 done
 
+$SC start vbk-ai:vbk-tts 2>&1 | head -5 || true
+echo "    Đợi TTS service ready (port 9004 — Chatterbox warm-up 60-120s lần đầu)..."
+for i in $(seq 1 90); do
+    if curl -fsS http://127.0.0.1:9004/healthz/ready >/dev/null 2>&1; then
+        echo "    TTS service ready"
+        break
+    fi
+    sleep 2
+done
+
 $SC start vbk-ai:vbk-translate 2>&1 | head -5 || true
-echo "    Đợi API gateway ready (port 9002)..."
+echo "    Đợi Translate service ready (port 9002)..."
 sleep 3
 for i in $(seq 1 30); do
     if curl -fsS http://127.0.0.1:9002/healthz/ready >/dev/null 2>&1; then
-        echo "    API gateway ready"
+        echo "    Translate service ready"
         break
     fi
     sleep 2
@@ -236,14 +299,13 @@ echo ""
 echo "================================================"
 echo " DEPLOY XONG"
 echo "================================================"
-echo " API local:     http://127.0.0.1:9002"
-echo " API docs:      http://127.0.0.1:9002/docs"
-echo " Health:        http://127.0.0.1:9002/v1/health"
-echo " Models:        http://127.0.0.1:9002/v1/models"
-echo " Metrics:       http://127.0.0.1:9002/v1/metrics"
+echo " Translate API: http://127.0.0.1:9002"
+echo " Translate docs: http://127.0.0.1:9002/docs"
+echo " OCR service:    http://127.0.0.1:9003 (PaddleOCR PP-OCRv5 + manga-ocr)"
+echo " TTS service:    http://127.0.0.1:9004 (Chatterbox Multilingual 0.5B)"
+echo " Metrics:        http://127.0.0.1:9002/v1/metrics"
 echo ""
 echo " vLLM translator (internal): http://127.0.0.1:9001"
-echo " OCR service (internal):     http://127.0.0.1:9003"
 echo ""
 echo " Anh access từ máy local qua SSH tunnel:"
 echo "   ssh -p 12832 -i server/deploy_key -L 9002:127.0.0.1:9002 root@80.59.54.98"

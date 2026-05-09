@@ -18,7 +18,7 @@ nvidia-smi --query-gpu=utilization.gpu,memory.used,memory.total --format=csv,noh
 
 echo ""
 echo "=== Port listen ==="
-ss -tlnp 2>/dev/null | grep -E ":(9001|9002|9003)" || echo "    không có port 9001/9002/9003 đang listen"
+ss -tlnp 2>/dev/null | grep -E ":(9001|9002|9003|9004)" || echo "    không có port 9001/9002/9003/9004 đang listen"
 
 echo ""
 echo "=== Endpoint test ==="
@@ -27,7 +27,11 @@ for url in \
     "http://127.0.0.1:9002/healthz/live|Translate service liveness (port 9002)" \
     "http://127.0.0.1:9002/healthz/ready|Translate service readiness" \
     "http://127.0.0.1:9002/v1/models|Translate service models" \
-    "http://127.0.0.1:9003/healthz/live|OCR service (port 9003)"; do
+    "http://127.0.0.1:9003/healthz/live|OCR service (port 9003)" \
+    "http://127.0.0.1:9004/healthz/live|TTS service liveness (port 9004)" \
+    "http://127.0.0.1:9004/healthz/ready|TTS service readiness" \
+    "http://127.0.0.1:9004/v1/voices|TTS voices list" \
+    "http://127.0.0.1:9004/v1/languages|TTS supported languages"; do
     target=$(echo "$url" | cut -d'|' -f1)
     label=$(echo "$url" | cut -d'|' -f2)
     code=$(curl -s -o /dev/null -w "%{http_code}" -m 5 "$target" 2>/dev/null)
@@ -57,8 +61,20 @@ else
 fi
 
 echo ""
+echo "=== Smoke TTS (Chatterbox EN default voice) ==="
+code=$(curl -s -o /dev/null -w "%{http_code}" -m 30 -X POST \
+    -H "Content-Type: application/json" \
+    -d '{"text":"Hello world","language_id":"en","voice_id":"default"}' \
+    "http://127.0.0.1:9004/v1/tts" 2>/dev/null)
+if [[ "$code" == "200" ]]; then
+    echo "[OK]   TTS Chatterbox EN ($code)"
+else
+    echo "[FAIL] TTS ($code)"
+fi
+
+echo ""
 echo "=== Log tail (10 dòng cuối) ==="
-for log in vllm-translator api; do
+for log in vllm-translator translate ocr tts; do
     f="$ROOT/logs/$log.log"
     e="$ROOT/logs/$log-err.log"
     echo "--- $log ---"

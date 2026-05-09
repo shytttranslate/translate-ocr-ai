@@ -1,0 +1,55 @@
+{
+  "$schema_note": "Manifest preset voice cho TTS service. id phải khớp regex ^[a-zA-Z0-9_-]+$. file=null → dùng default voice của Chatterbox.",
+  "_source": "LibriTTS-R (Google, CC-BY-4.0) qua HF dataset blabble-io/libritts_r — 6 speakers chọn theo F0 spread.",
+  "voices": [
+    {
+      "id": "default",
+      "file": null,
+      "gender": null,
+      "language_hint": null,
+      "description": "Default voice của Chatterbox Multilingual (không audio prompt)"
+    },
+    {
+      "id": "male_deep",
+      "file": "male_deep.wav",
+      "gender": "male",
+      "language_hint": "en",
+      "description": "Bass — giọng nam trầm sâu (LibriTTS-R speaker 5536, F0~96Hz)"
+    },
+    {
+      "id": "male_warm",
+      "file": "male_warm.wav",
+      "gender": "male",
+      "language_hint": "en",
+      "description": "Baritone — giọng nam ấm trung (LibriTTS-R speaker 3170, F0~141Hz)"
+    },
+    {
+      "id": "male_bright",
+      "file": "male_bright.wav",
+      "gender": "male",
+      "language_hint": "en",
+      "description": "Tenor — giọng nam sáng cao (LibriTTS-R speaker 174, F0~157Hz)"
+    },
+    {
+      "id": "female_warm",
+      "file": "female_warm.wav",
+      "gender": "female",
+      "language_hint": "en",
+      "description": "Alto — giọng nữ ấm thấp (LibriTTS-R speaker 8842, F0~186Hz)"
+    },
+    {
+      "id": "female_clear",
+      "file": "female_clear.wav",
+      "gender": "female",
+      "language_hint": "en",
+      "description": "Mezzo — giọng nữ trong trung (LibriTTS-R speaker 6313, F0~220Hz)"
+    },
+    {
+      "id": "female_bright",
+      "file": "female_bright.wav",
+      "gender": "female",
+      "language_hint": "en",
+      "description": "Soprano — giọng nữ sáng cao (LibriTTS-R speaker 2035, F0~245Hz)"
+    }
+  ]
+}

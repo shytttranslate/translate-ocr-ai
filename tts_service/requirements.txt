@@ -1,0 +1,39 @@
+## TTS service — Chatterbox Multilingual 0.5B (ResembleAI, MIT).
+## Cài trong .venv-tts riêng (deploy.sh setup).
+## torch + torchaudio cài SEPARATELY từ index PyTorch cu130 (xem deploy.sh) — KHÔNG pin ở đây.
+
+# ----------------------------------------------------------------------
+# Core API stack — đồng bộ translate_service
+# ----------------------------------------------------------------------
+fastapi==0.115.5
+uvicorn[standard]==0.32.1
+pydantic==2.9.2
+pydantic-settings==2.6.1
+prometheus-client==0.21.0
+prometheus-fastapi-instrumentator==7.0.0
+python-multipart==0.0.18
+structlog==24.4.0
+orjson==3.10.11
+
+# ----------------------------------------------------------------------
+# Chatterbox runtime deps — pin theo upstream repo (resemble-ai/chatterbox).
+# `chatterbox-tts` package itself: cài SEPARATELY trong deploy.sh
+# (PyPI primary, fallback git clone vendor/chatterbox vì PyPI v0.1.3+ flaky).
+# ----------------------------------------------------------------------
+transformers==4.46.3
+diffusers==0.29.0
+librosa==0.11.0
+resemble-perth==1.0.1
+s3tokenizer
+conformer==0.3.2
+omegaconf==2.3.0
+spacy-pkuseg
+pykakasi==2.3.0
+safetensors==0.5.3
+onnx==1.16.0
+numpy==1.26.4
+soundfile==0.12.1
+
+# Text normalization (số/currency/percent → words) trước khi gửi vào Chatterbox.
+# Chatterbox không có normalizer built-in → "1000" có thể đọc thành "hundred".
+num2words==0.5.13

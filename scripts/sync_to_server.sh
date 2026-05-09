@@ -25,6 +25,8 @@ rsync -avz --delete --progress \
     --exclude='.env' \
     --exclude='.venv-api' \
     --exclude='.venv-vllm' \
+    --exclude='.venv-tts' \
+    --exclude='vendor/' \
     --exclude='__pycache__' \
     --exclude='*.pyc' \
     --exclude='.mypy_cache' \
