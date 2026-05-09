@@ -22,7 +22,7 @@ from typing import Any
 import numpy as np
 from PIL import Image
 
-from engine import OcrBlock, OcrEngine, OcrWord
+from engine import OcrLine, OcrEngine, OcrWord
 
 log = logging.getLogger("ocr_service.manga")
 
@@ -38,7 +38,14 @@ class MangaBubble:
 
 
 class MangaOcrWrapper:
-    """Singleton wrapper cho manga-ocr (lazy init)."""
+    """Singleton wrapper cho manga-ocr (lazy init).
+
+    **Thread safety:** torch CUDA forward pass KHÔNG thread-safe khi gọi đồng thời
+    từ multiple thread pool worker. Multi-thread + Blackwell + torch 2.11 → race condition
+    trong CUDA kernel scheduler → segfault SAU khi request return (async, libuv event loop).
+    Serialize bằng `_inference_lock` để mỗi inference chạy single-threaded.
+    Trade-off: throughput per-line giảm xuống ~1/lock, nhưng 13-24ms GPU vẫn fast enough.
+    """
 
     _instance: "MangaOcrWrapper | None" = None
     _lock = threading.Lock()
@@ -46,6 +53,8 @@ class MangaOcrWrapper:
     def __init__(self) -> None:
         self._mocr: Any = None
         self._init_lock = threading.Lock()
+        # Serialize forward pass — tránh race CUDA giữa thread pool worker.
+        self._inference_lock = threading.Lock()
 
     @classmethod
     def get(cls) -> "MangaOcrWrapper":
@@ -72,9 +81,13 @@ class MangaOcrWrapper:
             log.info("manga_ocr_ready force_cpu=%s", force_cpu)
 
     def recognize(self, pil_image: Image.Image) -> str:
-        """Nhận diện text trong ảnh đã crop. Input: PIL.Image."""
+        """Nhận diện text trong ảnh đã crop. Input: PIL.Image.
+
+        Thread-safe: lock serialize CUDA forward pass.
+        """
         self._ensure_init()
-        return self._mocr(pil_image)
+        with self._inference_lock:
+            return self._mocr(pil_image)
 
 
 def _bbox_axis_aligned(poly: list[list[int]]) -> tuple[int, int, int, int]:
@@ -288,7 +301,7 @@ def _block_in_bubble(block_bbox: list[list[int]], bubble: tuple[int, int, int, i
 
 
 def cluster_into_bubbles(
-    blocks: list[OcrBlock],
+    blocks: list[OcrLine],
     image_width: int,
     image_height: int,
     image_bytes: bytes | None = None,
@@ -354,7 +367,7 @@ def cluster_into_bubbles(
 
 
 def _cluster_heuristic(
-    blocks: list[OcrBlock],
+    blocks: list[OcrLine],
     image_width: int,
     image_height: int,
 ) -> list[list[int]]:
@@ -458,7 +471,7 @@ async def run_manga_pipeline(
     image_bytes: bytes,
     engine: OcrEngine,
     use_manga_ocr_for_recognition: bool = True,
-) -> tuple[list[OcrBlock], list[MangaBubble], int, int]:
+) -> tuple[list[OcrLine], list[MangaBubble], int, int]:
     """Manga pipeline đầy đủ.
 
     1. PaddleOCR detection (model 'japan' để cover JP text trong default rec).
@@ -483,7 +496,7 @@ async def run_manga_pipeline(
             if pil_full.mode != "RGB":
                 pil_full = pil_full.convert("RGB")
 
-            def _re_recognize(blk: OcrBlock) -> str:
+            def _re_recognize(blk: OcrLine) -> str:
                 x1, y1, x2, y2 = _bbox_axis_aligned(blk.bbox)
                 # Padding nhỏ để không cắt sát chữ
                 pad = 4

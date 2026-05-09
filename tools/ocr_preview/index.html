@@ -288,7 +288,8 @@
     transition: fill 0.1s;
   }
   .bbox.layer-paragraph { stroke: var(--c-paragraph); }
-  .bbox.layer-block { stroke: var(--c-block); }
+  .bbox.layer-block { stroke: var(--c-paragraph); }
+  .bbox.layer-line { stroke: var(--c-block); }
   .bbox.layer-word { stroke: var(--c-word); }
   .bbox.low { stroke: var(--c-low); }
   .bbox-fill {
@@ -540,19 +541,6 @@
     </div>
 
     <div>
-      <label class="field-label">Detection level (server)</label>
-      <div class="seg">
-        <input type="radio" name="level" id="levelBlock" value="block" />
-        <label for="levelBlock">Block</label>
-        <input type="radio" name="level" id="levelWord" value="word" checked />
-        <label for="levelWord">Word</label>
-      </div>
-      <p style="font-size:11px;color:var(--muted);margin:4px 2px 0;">
-        Word level luôn trả thêm <code style="font-size:10px">words[]</code> để overlay.
-      </p>
-    </div>
-
-    <div>
       <label class="field-label">Reading order</label>
       <div class="seg">
         <input type="radio" name="order" id="orderAuto" value="auto" checked />
@@ -564,18 +552,14 @@
       </div>
     </div>
 
-    <label class="switches">
-      <label><input type="checkbox" id="mergePara" checked /> Gộp thành paragraph</label>
-    </label>
-
     <button class="primary" id="runBtn">Run OCR</button>
 
     <div class="stats" id="stats" hidden>
       <div class="row"><span class="key">Detected lang</span><span class="val" id="statLang">-</span></div>
       <div class="row"><span class="key">Image size</span><span class="val" id="statSize">-</span></div>
       <div class="row"><span class="key">Reading order</span><span class="val" id="statOrder">-</span></div>
-      <div class="row"><span class="key">Paragraphs</span><span class="val" id="statParas">-</span></div>
       <div class="row"><span class="key">Blocks</span><span class="val" id="statBlocks">-</span></div>
+      <div class="row"><span class="key">Lines</span><span class="val" id="statLines">-</span></div>
       <div class="row"><span class="key">Words</span><span class="val" id="statWords">-</span></div>
       <div class="row"><span class="key">Avg confidence</span><span class="val" id="statAvgConf">-</span></div>
       <div class="row"><span class="key">Server time</span><span class="val" id="statTime">-</span></div>
@@ -587,10 +571,10 @@
     <div class="toolbar">
       <strong style="font-size:12px;">Show:</strong>
       <div class="layer-checks">
-        <label><input type="checkbox" id="showPara" checked />
-          <span class="dot" style="background:var(--c-paragraph)"></span> Paragraph</label>
-        <label><input type="checkbox" id="showBlock" />
-          <span class="dot" style="background:var(--c-block)"></span> Block</label>
+        <label><input type="checkbox" id="showBlock" checked />
+          <span class="dot" style="background:var(--c-paragraph)"></span> Block</label>
+        <label><input type="checkbox" id="showLine" />
+          <span class="dot" style="background:var(--c-block)"></span> Line</label>
         <label><input type="checkbox" id="showWord" />
           <span class="dot" style="background:var(--c-word)"></span> Word</label>
       </div>
@@ -628,8 +612,8 @@
         <div class="stage" id="stage">
           <img class="bg-image" id="bgImage" alt="" />
           <svg class="overlay" id="overlay" xmlns="http://www.w3.org/2000/svg">
-            <g class="layer-paragraphs" id="layerParagraphs"></g>
             <g class="layer-blocks" id="layerBlocks"></g>
+            <g class="layer-lines" id="layerLines"></g>
             <g class="layer-words" id="layerWords"></g>
           </svg>
         </div>
@@ -685,8 +669,8 @@ const viewState = {
   showBox: true,
   showLabel: false,
   redLowConf: true,
-  layers: { paragraph: true, block: false, word: false },  // bật/tắt từng overlay độc lập
-  listLayer: "paragraph",                                  // tab nào đang hiện ở right panel
+  layers: { block: true, line: false, word: false },  // bật/tắt từng overlay độc lập (ML Kit hierarchy)
+  listLayer: "block",                                  // tab nào đang hiện ở right panel
   activeId: null,
 };
 
@@ -754,9 +738,7 @@ imageUrlInput.addEventListener("keydown", (e) => { if (e.key === "Enter") runOcr
 async function runOcr() {
   const apiUrl = apiUrlInput.value.replace(/\/+$/, "");
   const lang = langSelect.value;
-  const level = document.querySelector('input[name="level"]:checked').value;
   const reading_order = document.querySelector('input[name="order"]:checked').value;
-  const merge_paragraphs = $("mergePara").checked;
   const mode = document.querySelector('input[name="mode"]:checked').value;
 
   if (activeTab === "url" && !imageUrlInput.value.trim()) { showError("Nhập Image URL"); return; }
@@ -779,15 +761,13 @@ async function runOcr() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           image_url: imageUrlInput.value.trim(),
-          lang, level, merge_paragraphs, reading_order, mode,
+          lang, reading_order, mode,
         }),
       });
     } else {
       const fd = new FormData();
       fd.append("file", selectedFile);
       fd.append("lang", lang);
-      fd.append("level", level);
-      fd.append("merge_paragraphs", String(merge_paragraphs));
       fd.append("mode", mode);
       fd.append("reading_order", reading_order);
       resp = await fetch(`${apiUrl}/v1/ocr/upload`, { method: "POST", body: fd });
@@ -810,7 +790,7 @@ async function runOcr() {
       img.src = imageObjectUrl || imageUrlInput.value.trim();
     });
 
-    lastResult = { response: data, imageUrl: imageObjectUrl || imageUrlInput.value.trim(), level };
+    lastResult = { response: data, imageUrl: imageObjectUrl || imageUrlInput.value.trim() };
     render();
   } catch (err) {
     showError(err.message);
@@ -824,7 +804,7 @@ async function runOcr() {
 // ==================== RENDER ====================
 function render() {
   if (!lastResult) return;
-  const { response, imageUrl, level } = lastResult;
+  const { response, imageUrl } = lastResult;
 
   placeholder.hidden = true;
   stageWrap.hidden = false;
@@ -840,50 +820,59 @@ function render() {
   overlay.setAttribute("height", H);
   overlay.setAttribute("viewBox", `0 0 ${W} ${H}`);
 
-  // Build layers
-  buildLayer($("layerParagraphs"), (response.paragraphs || []).map((p, i) => ({
-    id: `p${i}`, layer: "paragraph", bbox: p.bbox, text: p.text,
-    confidence: p.avg_confidence, meta: `${p.line_count} lines`,
-  })));
-  buildLayer($("layerBlocks"), (response.text_blocks || []).map((b, i) => ({
-    id: `b${i}`, layer: "block", bbox: b.bbox, text: b.text,
-    confidence: b.confidence,
-  })));
+  // ML Kit hierarchy: blocks > lines > words
+  const blocks = response.blocks || [];
+
+  // Flatten lines + words từ blocks
+  const lineItems = [];
   const wordItems = [];
-  (response.text_blocks || []).forEach((b, bi) => {
-    (b.words || []).forEach((w, wi) => {
-      wordItems.push({
-        id: `w${bi}_${wi}`, layer: "word", bbox: w.bbox,
-        text: w.text, confidence: b.confidence,
+  blocks.forEach((b, bi) => {
+    (b.lines || []).forEach((l, li) => {
+      lineItems.push({
+        id: `l${bi}_${li}`, layer: "line", bbox: l.bbox,
+        text: l.text, confidence: l.confidence,
+      });
+      (l.words || []).forEach((w, wi) => {
+        wordItems.push({
+          id: `w${bi}_${li}_${wi}`, layer: "word", bbox: w.bbox,
+          text: w.text, confidence: w.confidence,
+        });
       });
     });
   });
+
+  // Build SVG layers
+  buildLayer($("layerBlocks"), blocks.map((b, i) => ({
+    id: `b${i}`, layer: "block", bbox: b.bbox, text: b.text,
+    confidence: b.confidence, meta: `${b.line_count} lines`,
+  })));
+  buildLayer($("layerLines"), lineItems);
   buildLayer($("layerWords"), wordItems);
 
-  // Enable/disable checkbox layer + tabs theo data có sẵn
+  // Enable/disable checkbox layer theo data có sẵn
+  const hasLines = lineItems.length > 0;
   const hasWords = wordItems.length > 0;
-  const hasParas = !!(response.paragraphs && response.paragraphs.length > 0);
+  $("showLine").disabled = !hasLines;
   $("showWord").disabled = !hasWords;
-  $("showPara").disabled = !hasParas;
-  if (!hasWords) viewState.layers.word = false;
-  if (!hasParas) viewState.layers.paragraph = false;
-  $("showPara").checked = viewState.layers.paragraph;
+  if (!hasLines && viewState.layers.line) viewState.layers.line = false;
+  if (!hasWords && viewState.layers.word) viewState.layers.word = false;
   $("showBlock").checked = viewState.layers.block;
+  $("showLine").checked = viewState.layers.line;
   $("showWord").checked = viewState.layers.word;
 
   // Tabs cho item list
-  $("cntPara").textContent = (response.paragraphs || []).length;
-  $("cntBlock").textContent = (response.text_blocks || []).length;
-  $("cntWord").textContent = wordItems.length;
-  $("listTabs").querySelector('[data-list="paragraph"]').disabled = !hasParas;
-  $("listTabs").querySelector('[data-list="word"]').disabled = !hasWords;
-  if (viewState.listLayer === "paragraph" && !hasParas) viewState.listLayer = "block";
-  if (viewState.listLayer === "word" && !hasWords) viewState.listLayer = "block";
+  if ($("cntPara")) $("cntPara").textContent = blocks.length;
+  if ($("cntBlock")) $("cntBlock").textContent = lineItems.length;
+  if ($("cntWord")) $("cntWord").textContent = wordItems.length;
+  const listTabs = $("listTabs");
+  if (listTabs) {
+    const paraTab = listTabs.querySelector('[data-list="paragraph"]');
+    const wordTab = listTabs.querySelector('[data-list="word"]');
+    if (paraTab) paraTab.disabled = blocks.length === 0;
+    if (wordTab) wordTab.disabled = !hasWords;
+  }
 
   // Stats
-  const blocks = response.text_blocks || [];
-  const paras = response.paragraphs || [];
-  const totalWords = blocks.reduce((s, b) => s + (b.words?.length || 0), 0);
   const avgConf = blocks.length ? blocks.reduce((a, b) => a + b.confidence, 0) / blocks.length : 0;
   $("stats").hidden = false;
   $("statLang").textContent = response.detected_lang || "—";
@@ -891,9 +880,9 @@ function render() {
   const order = response.reading_order || "—";
   $("statOrder").innerHTML = order === "—" ? "—" :
     `<span class="badge ${order}">${order.toUpperCase()}</span>`;
-  $("statParas").textContent = response.paragraphs ? paras.length : "(tắt)";
   $("statBlocks").textContent = blocks.length;
-  $("statWords").textContent = level === "word" ? totalWords : "(bật Word level)";
+  if ($("statLines")) $("statLines").textContent = lineItems.length;
+  $("statWords").textContent = hasWords ? wordItems.length : "(ảnh quá lớn → degrade)";
   $("statAvgConf").textContent = `${(avgConf * 100).toFixed(1)}%`;
   $("statTime").textContent = `${response.processing_time_ms} ms`;
 
@@ -970,22 +959,30 @@ function renderItemList() {
   if (!lastResult) return;
   const { response } = lastResult;
   let items = [];
-  if (viewState.listLayer === "paragraph") {
-    items = (response.paragraphs || []).map((p, i) => ({
-      id: `p${i}`, layer: "paragraph", text: p.text,
-      conf: p.avg_confidence, meta: `${p.line_count} lines · idx ${p.block_indices.join(",")}`,
+  const blocks = response.blocks || [];
+  if (viewState.listLayer === "paragraph" || viewState.listLayer === "block") {
+    // Tab "Para" tương ứng top-level block (ML Kit Block = paragraph)
+    items = blocks.map((b, i) => ({
+      id: `b${i}`, layer: "paragraph", text: b.text,
+      conf: b.confidence, meta: `${b.line_count} lines`,
     }));
-  } else if (viewState.listLayer === "block") {
-    items = (response.text_blocks || []).map((b, i) => ({
-      id: `b${i}`, layer: "block", text: b.text,
-      conf: b.confidence,
-    }));
-  } else {
-    (response.text_blocks || []).forEach((b, bi) => {
-      (b.words || []).forEach((w, wi) => {
+  } else if (viewState.listLayer === "line" || viewState.listLayer === "blockLine") {
+    blocks.forEach((b, bi) => {
+      (b.lines || []).forEach((l, li) => {
         items.push({
-          id: `w${bi}_${wi}`, layer: "word", text: w.text,
-          conf: b.confidence, meta: `block ${bi}`,
+          id: `l${bi}_${li}`, layer: "block", text: l.text,
+          conf: l.confidence, meta: `block ${bi}`,
+        });
+      });
+    });
+  } else {
+    blocks.forEach((b, bi) => {
+      (b.lines || []).forEach((l, li) => {
+        (l.words || []).forEach((w, wi) => {
+          items.push({
+            id: `w${bi}_${li}_${wi}`, layer: "word", text: w.text,
+            conf: w.confidence, meta: `block ${bi} · line ${li}`,
+          });
         });
       });
     });
@@ -1059,11 +1056,11 @@ function applyView() {
   // Image visibility
   stage.classList.toggle("image-hidden", !viewState.showImage);
 
-  // Layer visibility — 3 layer độc lập
-  $("layerParagraphs").classList.toggle("visible",
-    viewState.layers.paragraph && viewState.showBox);
+  // Layer visibility — 3 layer độc lập (ML Kit hierarchy)
   $("layerBlocks").classList.toggle("visible",
     viewState.layers.block && viewState.showBox);
+  $("layerLines").classList.toggle("visible",
+    viewState.layers.line && viewState.showBox);
   $("layerWords").classList.toggle("visible",
     viewState.layers.word && viewState.showBox);
 
@@ -1159,8 +1156,8 @@ $("btnToggleLowRed").addEventListener("click", () => {
 });
 
 // 3 checkbox toggle layer độc lập
-$("showPara").addEventListener("change", () => { viewState.layers.paragraph = $("showPara").checked; applyView(); });
 $("showBlock").addEventListener("change", () => { viewState.layers.block = $("showBlock").checked; applyView(); });
+$("showLine").addEventListener("change", () => { viewState.layers.line = $("showLine").checked; applyView(); });
 $("showWord").addEventListener("change", () => { viewState.layers.word = $("showWord").checked; applyView(); });
 
 // Tabs cho item list bên phải

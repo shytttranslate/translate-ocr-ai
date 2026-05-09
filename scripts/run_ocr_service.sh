@@ -37,6 +37,10 @@ export PADDLEOCR_CACHE_SIZE="${PADDLEOCR_CACHE_SIZE:-256}"
 # Tăng (vd 0.5) nếu muốn lọc khắt khe hơn, giảm 0 nếu muốn giữ mọi detection.
 export PADDLEOCR_MIN_CONFIDENCE="${PADDLEOCR_MIN_CONFIDENCE:-0.3}"
 
+# manga-ocr GPU (cu130) — work trên Blackwell SM 12.0 với torch 2.11.
+# Set 1 để fallback CPU nếu cần debug.
+export PADDLEOCR_MANGAOCR_CPU="${PADDLEOCR_MANGAOCR_CPU:-0}"
+
 # Workers: paddle CPU + fork CÓ ISSUE — đôi khi worker crash khi xử lý ảnh lớn
 # (PIL/numpy/paddle Conv kernel race condition). Giảm xuống 1 cho stable.
 # Concurrency dựa vào engine pool size + asyncio. Trade-off throughput cho stability.

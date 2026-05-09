@@ -111,6 +111,9 @@ USE_MOBILE_MODEL = os.environ.get("PADDLEOCR_USE_MOBILE", "0") == "1"
 # Resize ảnh down nếu max(width, height) > MAX_DIMENSION → giảm latency 2-3x với ảnh lớn.
 # 1600px đủ cho text rõ; ảnh > 1600 thường là document scan high-res không cần thiết cho OCR.
 MAX_IMAGE_DIMENSION = int(os.environ.get("PADDLEOCR_MAX_DIMENSION", "1600"))
+# Hard cap pixel count — PaddleOCR detection crash với ảnh > ~1.5-2M pixels (ConvKernel segfault).
+# Sau resize MAX_DIMENSION, nếu vẫn vượt cap → tiếp tục downscale theo sqrt(cap/pixels).
+MAX_IMAGE_PIXELS = int(os.environ.get("PADDLEOCR_MAX_PIXELS", "1500000"))
 # textline orientation classification — cần khi text xoay 90/180/270°. Tắt nhanh hơn ~10-15%.
 USE_TEXTLINE_ORIENTATION = os.environ.get("PADDLEOCR_USE_TEXTLINE_ORI", "0") == "1"
 # Filter nhiễu: bỏ text block có confidence < threshold. Default 0.3 (30%).
@@ -183,7 +186,7 @@ class OcrWord:
 
 
 @dataclass
-class OcrBlock:
+class OcrLine:
     text: str
     confidence: float
     bbox: list[list[int]]
@@ -287,7 +290,7 @@ class OcrEngine:
                 self._pools[actual] = _LangEnginePool(lang=actual, size=POOL_SIZE)
         return self._pools[actual]
 
-    def _run_inference(self, engine: Any, bgr: np.ndarray, return_word_box: bool = False) -> list[OcrBlock]:
+    def _run_inference(self, engine: Any, bgr: np.ndarray, return_word_box: bool = False) -> list[OcrLine]:
         version = self._detect_api_version()
         if version == "v3":
             kwargs = {"return_word_box": True} if return_word_box else {}
@@ -295,8 +298,8 @@ class OcrEngine:
         return self._parse_v2_result(engine.ocr(bgr, cls=True))
 
     @staticmethod
-    def _parse_v3_result(raw: Any) -> list[OcrBlock]:
-        blocks: list[OcrBlock] = []
+    def _parse_v3_result(raw: Any) -> list[OcrLine]:
+        blocks: list[OcrLine] = []
         if not raw:
             return blocks
         for result in raw:
@@ -341,12 +344,12 @@ class OcrEngine:
                             text=wt,
                             bbox=[[x1, y1], [x2, y1], [x2, y2], [x1, y2]],
                         ))
-                blocks.append(OcrBlock(text=t, confidence=conf, bbox=bbox, words=words))
+                blocks.append(OcrLine(text=t, confidence=conf, bbox=bbox, words=words))
         return blocks
 
     @staticmethod
-    def _parse_v2_result(raw: Any) -> list[OcrBlock]:
-        blocks: list[OcrBlock] = []
+    def _parse_v2_result(raw: Any) -> list[OcrLine]:
+        blocks: list[OcrLine] = []
         if not raw or not raw[0]:
             return blocks
         for entry in raw[0]:
@@ -363,7 +366,7 @@ class OcrEngine:
             if conf < MIN_CONFIDENCE:
                 continue
             bbox_int = [[int(round(p[0])), int(round(p[1]))] for p in bbox_pts]
-            blocks.append(OcrBlock(text=text, confidence=conf, bbox=bbox_int))
+            blocks.append(OcrLine(text=text, confidence=conf, bbox=bbox_int))
         return blocks
 
     @staticmethod
@@ -371,25 +374,31 @@ class OcrEngine:
         img = Image.open(io.BytesIO(image_bytes))
         if img.mode != "RGB":
             img = img.convert("RGB")
-        # Resize down nếu max(w, h) > MAX_IMAGE_DIMENSION → giảm latency 2-3x.
-        # Trả về width/height GỐC (trước resize) nhưng bbox sẽ tính trên ảnh đã resize.
-        # → bbox phải scale ngược về tỷ lệ ảnh gốc.
         original_width, original_height = img.size
+
+        # 2-pass resize: (1) cap dimension, (2) cap pixel count.
+        # PaddleOCR crash với pixels > ~1.5-2M ngay cả khi dimension nhỏ (vd ảnh vuông 1500x1500).
         scale = 1.0
-        if max(original_width, original_height) > MAX_IMAGE_DIMENSION:
-            scale = MAX_IMAGE_DIMENSION / max(original_width, original_height)
-            new_w = int(original_width * scale)
-            new_h = int(original_height * scale)
-            img = img.resize((new_w, new_h), Image.LANCZOS)
-            log.info("image_resized %dx%d → %dx%d (scale=%.3f)",
-                     original_width, original_height, new_w, new_h, scale)
+        cur_w, cur_h = original_width, original_height
+        if max(cur_w, cur_h) > MAX_IMAGE_DIMENSION:
+            scale = MAX_IMAGE_DIMENSION / max(cur_w, cur_h)
+            cur_w, cur_h = int(cur_w * scale), int(cur_h * scale)
+        if cur_w * cur_h > MAX_IMAGE_PIXELS:
+            extra = (MAX_IMAGE_PIXELS / (cur_w * cur_h)) ** 0.5
+            scale *= extra
+            cur_w, cur_h = int(cur_w * extra), int(cur_h * extra)
+        if scale < 1.0:
+            img = img.resize((cur_w, cur_h), Image.LANCZOS)
+            log.info("image_resized %dx%d → %dx%d (scale=%.3f, pixels=%d)",
+                     original_width, original_height, cur_w, cur_h, scale, cur_w * cur_h)
+
         rgb = np.asarray(img)
         bgr = rgb[:, :, ::-1].copy()
         return bgr, original_width, original_height, scale  # type: ignore[return-value]
 
     async def ocr(
         self, image_bytes: bytes, lang: str, return_word_box: bool = False,
-    ) -> tuple[list[OcrBlock], int, int]:
+    ) -> tuple[list[OcrLine], int, int]:
         bgr, width, height, scale = await asyncio.to_thread(self._decode_image, image_bytes)  # type: ignore[misc]
         pool = self._get_pool(lang)
         await pool.ensure_initialized(self._build_engine)
@@ -410,7 +419,7 @@ class OcrEngine:
 
     async def ocr_auto(
         self, image_bytes: bytes, return_word_box: bool = False,
-    ) -> tuple[list[OcrBlock], int, int, str]:
+    ) -> tuple[list[OcrLine], int, int, str]:
         """Auto-detect lang — 2-pass smart fallback.
 
         Pass 1: chạy default model "ch" (cover ch+chinese_cht+en+japan).

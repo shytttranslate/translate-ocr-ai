@@ -32,7 +32,7 @@ from dataclasses import dataclass, field
 from statistics import median
 from typing import Iterable, Literal
 
-from engine import OcrBlock
+from engine import OcrLine
 
 
 ReadingOrder = Literal["ltr", "rtl", "auto"]
@@ -95,7 +95,7 @@ class _UnionFind:
             self.parent[ra] = rb
 
 
-def detect_reading_order(blocks: list[OcrBlock]) -> ReadingOrder:
+def detect_reading_order(blocks: list[OcrLine]) -> ReadingOrder:
     """Public helper — wrap `_detect_reading_order_from_extents` để client không phải tự build extents."""
     if not blocks:
         return "ltr"
@@ -124,7 +124,7 @@ def _detect_reading_order_from_extents(
 
 
 def merge_blocks_into_paragraphs(
-    blocks: list[OcrBlock],
+    blocks: list[OcrLine],
     reading_order: ReadingOrder = "auto",
     x_overlap_threshold: float = 0.3,
     line_gap_ratio: float = 1.5,
