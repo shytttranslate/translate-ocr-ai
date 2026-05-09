@@ -20,7 +20,13 @@ from dataclasses import dataclass
 from typing import Any
 
 import numpy as np
-from PIL import Image
+from PIL import Image, ImageFile
+
+# Một số JPG có trailing bytes sau EOI marker (thường do editor save kiểu cũ).
+# PIL default raise "image file is truncated (N bytes not processed)" khi load lazy
+# (.crop / .convert). Nếu raise → bỏ qua toàn bộ manga-ocr re-recognize → manga mode
+# rớt về dùng PaddleOCR rec (mất accuracy JP). Bật flag này để PIL tolerate.
+ImageFile.LOAD_TRUNCATED_IMAGES = True
 
 from engine import OcrLine, OcrEngine, OcrWord
 
@@ -628,20 +634,24 @@ async def run_manga_pipeline(
     if use_manga_ocr_for_recognition:
         try:
             mocr = MangaOcrWrapper.get()
-            # Decode ảnh gốc 1 lần
+            # Decode ảnh gốc 1 lần → numpy array. PIL.Image NOT thread-safe khi
+            # concurrent .crop() (race trong file decoder → "'NoneType' has no
+            # attribute 'read'"). Numpy array thread-safe (slicing trả view),
+            # Image.fromarray tạo Image mới per-thread.
             pil_full = Image.open(io.BytesIO(image_bytes))
             if pil_full.mode != "RGB":
                 pil_full = pil_full.convert("RGB")
+            arr = np.asarray(pil_full)
+            img_h, img_w = arr.shape[:2]
 
             def _re_recognize(blk: OcrLine) -> str:
                 x1, y1, x2, y2 = _bbox_axis_aligned(blk.bbox)
-                # Padding nhỏ để không cắt sát chữ
                 pad = 4
                 x1, y1 = max(0, x1 - pad), max(0, y1 - pad)
-                x2, y2 = min(pil_full.width, x2 + pad), min(pil_full.height, y2 + pad)
+                x2, y2 = min(img_w, x2 + pad), min(img_h, y2 + pad)
                 if x2 <= x1 or y2 <= y1:
                     return blk.text
-                crop = pil_full.crop((x1, y1, x2, y2))
+                crop = Image.fromarray(arr[y1:y2, x1:x2])
                 try:
                     return mocr.recognize(crop)
                 except Exception as exc:  # noqa: BLE001
