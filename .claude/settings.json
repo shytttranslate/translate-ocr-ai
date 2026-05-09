@@ -23,7 +23,12 @@
       "Bash(ssh -p 61238 -i /home/thinh/AI_server/server/deploy_key -o IdentitiesOnly=yes -o UserKnownHostsFile=/home/thinh/AI_server/server/known_hosts root@38.79.155.163 \"ss -tlnp 2>/dev/null | grep -E ':8080|:9000|:8000' ; echo '---' ; ls /workspace/ 2>/dev/null ; echo '---' ; ps aux | grep -iE 'jupyter|vllm|python' | grep -v grep | head -10\")",
       "Bash(ssh-keyscan -p 61238 -t ed25519,rsa,ecdsa 38.79.155.163)",
       "Bash(REMOTE_HOST=38.79.155.163 REMOTE_PORT=61238 bash scripts/sync_to_server.sh)",
-      "Bash(ssh -p 61238 -i /home/thinh/AI_server/server/deploy_key -o IdentitiesOnly=yes -o UserKnownHostsFile=/home/thinh/AI_server/server/known_hosts root@38.79.155.163 \"ls -la /workspace/vbk-ai-server/ | head -20 && echo '---' && du -sh /workspace/vbk-ai-server\")"
+      "Bash(ssh -p 61238 -i /home/thinh/AI_server/server/deploy_key -o IdentitiesOnly=yes -o UserKnownHostsFile=/home/thinh/AI_server/server/known_hosts root@38.79.155.163 \"ls -la /workspace/vbk-ai-server/ | head -20 && echo '---' && du -sh /workspace/vbk-ai-server\")",
+      "Bash(bash -n /home/thinh/AI_server/scripts/run_ocr_service.sh)",
+      "Bash(ssh -p 12832 -i /home/thinh/AI_server/server/deploy_key -o IdentitiesOnly=yes -o UserKnownHostsFile=/home/thinh/AI_server/server/known_hosts root@80.59.54.98 ' *)",
+      "Bash(/usr/bin/grep -n \"ocr_auto\" /home/thinh/AI_server/ocr_service/engine.py)",
+      "Bash(/usr/bin/grep -n \"multipart\\\\|fastapi\" /home/thinh/AI_server/translate_service/requirements.txt)",
+      "Bash(./scripts/sync_to_server.sh)"
     ]
   }
 }

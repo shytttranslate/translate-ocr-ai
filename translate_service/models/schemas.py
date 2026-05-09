@@ -188,53 +188,6 @@ class DictResponse(BaseModel):
     )
 
 
-class OcrRequest(BaseModel):
-    """OCR ảnh: input base64, output text blocks kèm bbox pixel coordinates."""
-    model_config = ConfigDict(extra="forbid")
-
-    image: str = Field(
-        min_length=1,
-        description="Ảnh dạng base64 (PNG/JPG/WebP). Max 10MB sau decode.",
-    )
-    lang: str = Field(
-        default="auto",
-        description=(
-            "Language pack PaddleOCR PP-OCRv5. Hỗ trợ:\n"
-            "- auto: tự detect (en trước, fallback CJK nếu confidence thấp)\n"
-            "- en: English + Latin extended (gồm tiếng Việt diacritics)\n"
-            "- vi: alias của 'en' (PP-OCRv5 'en' model handle Latin extended)\n"
-            "- ch: Trung giản thể + Anh\n"
-            "- chinese_cht: Trung phồn thể\n"
-            "- japan, korean: Nhật, Hàn\n"
-            "- ru: East Slavic (Nga, Ukraina, Belarus — PaddleOCR map sang model eslav)"
-        ),
-    )
-
-
-class OcrTextBlock(BaseModel):
-    text: str
-    confidence: float = Field(ge=0.0, le=1.0)
-    bbox: list[list[int]] = Field(
-        min_length=4,
-        max_length=4,
-        description="4 góc theo thứ tự [top-left, top-right, bottom-right, bottom-left], pixel coords",
-    )
-
-
-class OcrResponse(BaseModel):
-    request_id: str
-    service: Literal["ocr"] = "ocr"
-    processing_time_ms: int
-    lang: str = Field(description="Language pack user request (có thể là 'auto')")
-    detected_lang: str = Field(
-        description="Language pack thực tế dùng để recognize (sau khi auto-detect)",
-    )
-    image_width: int
-    image_height: int
-    full_text: str = Field(description="Tất cả text blocks nối lại bằng \\n theo thứ tự đọc")
-    text_blocks: list[OcrTextBlock]
-
-
 class HealthStatus(BaseModel):
     status: Literal["ok", "degraded", "down"]
     version: str = "0.2.0"

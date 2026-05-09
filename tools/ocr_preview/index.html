@@ -1,0 +1,1183 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+<meta charset="utf-8">
+<title>OCR Preview</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+  :root {
+    --c-paragraph: #8b5cf6;
+    --c-block: #2563eb;
+    --c-word: #10b981;
+    --c-low: #ef4444;
+    --c-active: #f59e0b;
+    --bg: #f4f6fa;
+    --panel: #fff;
+    --border: #e6e8ee;
+    --text: #1a1a2e;
+    --text-soft: #555;
+    --muted: #888;
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; margin: 0; }
+  body {
+    font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    line-height: 1.45;
+    overflow: hidden;
+  }
+  header {
+    background: #1a1a2e;
+    color: #fff;
+    padding: 10px 16px;
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    flex-wrap: wrap;
+    height: 48px;
+  }
+  header h1 { margin: 0; font-size: 15px; font-weight: 600; }
+  header .api-url {
+    font-family: ui-monospace, monospace;
+    font-size: 11px;
+    background: rgba(255,255,255,0.12);
+    padding: 3px 7px;
+    border-radius: 4px;
+    color: #cdd5e0;
+  }
+  .container {
+    display: grid;
+    grid-template-columns: 320px 1fr 360px;
+    gap: 0;
+    height: calc(100vh - 48px);
+  }
+  @media (max-width: 1200px) {
+    .container { grid-template-columns: 280px 1fr; }
+    .panel-right { display: none; }
+  }
+
+  /* Generic panels */
+  .sidebar, .panel-right {
+    background: var(--panel);
+    border-right: 1px solid var(--border);
+    overflow-y: auto;
+    padding: 14px;
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+  }
+  .panel-right { border-right: 0; border-left: 1px solid var(--border); }
+
+  .field-label {
+    font-size: 11px;
+    font-weight: 700;
+    color: var(--text-soft);
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    margin-bottom: 4px;
+    display: block;
+  }
+  input[type=text], input[type=url], select {
+    width: 100%;
+    padding: 7px 10px;
+    border: 1px solid #d6dae3;
+    border-radius: 5px;
+    font-size: 13px;
+    font-family: inherit;
+  }
+  input:focus, select:focus { outline: 2px solid #4d7cfe; border-color: #4d7cfe; }
+
+  /* Tabs */
+  .tabs { display: flex; gap: 2px; border-bottom: 1px solid var(--border); margin-bottom: 6px; }
+  .tabs button {
+    flex: 1;
+    background: transparent;
+    border: 0;
+    padding: 6px 8px;
+    font-size: 12px;
+    font-weight: 600;
+    color: #666;
+    cursor: pointer;
+    border-bottom: 2px solid transparent;
+    margin-bottom: -1px;
+  }
+  .tabs button.active { color: #4d7cfe; border-bottom-color: #4d7cfe; }
+
+  /* Drop zone */
+  .drop-zone {
+    border: 2px dashed #c8cdd9;
+    border-radius: 6px;
+    padding: 16px 12px;
+    text-align: center;
+    cursor: pointer;
+    transition: all 0.15s;
+    background: #fafbfc;
+  }
+  .drop-zone:hover, .drop-zone.dragover { border-color: #4d7cfe; background: #f0f4ff; }
+  .drop-zone p { margin: 2px 0; color: #666; font-size: 12px; }
+  .drop-zone p.hint { font-size: 10px; color: #999; }
+  .drop-zone .icon { font-size: 24px; opacity: 0.4; }
+  .drop-zone .file-info {
+    background: #4d7cfe;
+    color: #fff;
+    padding: 5px 8px;
+    border-radius: 4px;
+    font-size: 11px;
+    font-family: ui-monospace, monospace;
+    word-break: break-all;
+  }
+  .drop-zone input[type=file] { display: none; }
+
+  button.primary {
+    background: #4d7cfe;
+    color: #fff;
+    border: 0;
+    padding: 9px 14px;
+    border-radius: 5px;
+    font-size: 13px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: background 0.15s;
+    width: 100%;
+  }
+  button.primary:hover { background: #3a67e8; }
+  button.primary:disabled { background: #b8c0d4; cursor: not-allowed; }
+
+  /* Segmented control */
+  .seg {
+    display: flex;
+    background: #f0f2f7;
+    border-radius: 5px;
+    padding: 2px;
+  }
+  .seg label {
+    flex: 1;
+    text-align: center;
+    padding: 5px 6px;
+    border-radius: 4px;
+    cursor: pointer;
+    font-size: 12px;
+    font-weight: 500;
+    color: #666;
+    transition: all 0.15s;
+  }
+  .seg input[type=radio] { display: none; }
+  .seg input[type=radio]:checked + label {
+    background: #fff;
+    color: #1a1a2e;
+    box-shadow: 0 1px 2px rgba(0,0,0,0.1);
+    font-weight: 600;
+  }
+  .seg input[type=radio]:disabled + label { color: #c8cdd9; cursor: not-allowed; }
+
+  /* Switch toggles */
+  .switches { display: flex; flex-direction: column; gap: 4px; }
+  .switches label {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-weight: normal;
+    color: var(--text);
+    font-size: 12px;
+    cursor: pointer;
+    margin: 0;
+    padding: 4px 6px;
+    border-radius: 4px;
+  }
+  .switches label:hover { background: #f4f6fa; }
+  .switches input[type=checkbox] { margin: 0; }
+
+  /* Stats card */
+  .stats {
+    background: #f4f6fa;
+    border-radius: 6px;
+    padding: 8px 10px;
+    font-size: 12px;
+  }
+  .stats .row { display: flex; justify-content: space-between; padding: 2px 0; }
+  .stats .row .key { color: var(--muted); }
+  .stats .row .val { font-family: ui-monospace, monospace; font-weight: 600; }
+  .stats .row .val .badge {
+    display: inline-block;
+    padding: 1px 6px;
+    border-radius: 3px;
+    color: #fff;
+    font-size: 10px;
+    margin-left: 4px;
+  }
+  .badge.ltr { background: var(--c-block); }
+  .badge.rtl { background: var(--c-paragraph); }
+
+  /* MAIN preview area */
+  .main {
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+    background: #e9ecf1;
+  }
+  .toolbar {
+    background: var(--panel);
+    border-bottom: 1px solid var(--border);
+    padding: 6px 10px;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    flex-wrap: wrap;
+    min-height: 40px;
+  }
+  .toolbar button {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    padding: 4px 8px;
+    font-size: 12px;
+    cursor: pointer;
+    color: var(--text);
+    font-family: ui-monospace, monospace;
+  }
+  .toolbar button:hover { background: #f4f6fa; }
+  .toolbar button.active { background: #4d7cfe; color: #fff; border-color: #4d7cfe; }
+  .toolbar .sep { width: 1px; height: 20px; background: var(--border); margin: 0 4px; }
+  .toolbar .zoom-info {
+    font-family: ui-monospace, monospace;
+    font-size: 11px;
+    color: var(--muted);
+    min-width: 50px;
+    text-align: center;
+  }
+  .canvas-wrap {
+    position: relative;
+    flex: 1;
+    overflow: hidden;
+    background:
+      repeating-conic-gradient(#dde1e8 0% 25%, #eef0f5 0% 50%) 50% / 16px 16px;
+  }
+  .stage-wrap {
+    position: absolute;
+    inset: 0;
+    overflow: auto;
+  }
+  .stage {
+    position: relative;
+    transform-origin: 0 0;
+    transition: transform 0.08s linear;
+    user-select: none;
+  }
+  .stage img.bg-image {
+    display: block;
+    pointer-events: none;
+    transition: opacity 0.15s;
+  }
+  .stage.image-hidden img.bg-image { opacity: 0; }
+  .stage.image-hidden { background: #fff; }
+  .stage svg.overlay {
+    position: absolute;
+    top: 0; left: 0;
+    overflow: visible;
+    pointer-events: none;
+  }
+  .stage svg.overlay > g { pointer-events: none; }
+  .stage svg.overlay > g.visible { pointer-events: auto; }
+  .stage svg.overlay > g:not(.visible) { display: none; }
+
+  .bbox {
+    fill: none;
+    stroke-width: 2;
+    cursor: pointer;
+    transition: fill 0.1s;
+  }
+  .bbox.layer-paragraph { stroke: var(--c-paragraph); }
+  .bbox.layer-block { stroke: var(--c-block); }
+  .bbox.layer-word { stroke: var(--c-word); }
+  .bbox.low { stroke: var(--c-low); }
+  .bbox-fill {
+    fill-opacity: 0;
+    transition: fill-opacity 0.1s;
+    cursor: pointer;
+  }
+  .bbox-fill.layer-paragraph { fill: var(--c-paragraph); }
+  .bbox-fill.layer-block { fill: var(--c-block); }
+  .bbox-fill.layer-word { fill: var(--c-word); }
+  g.visible .bbox-fill:hover { fill-opacity: 0.18; }
+  g.visible .bbox-fill.active { fill-opacity: 0.28; }
+  g.visible .bbox.active {
+    stroke: var(--c-active) !important;
+    stroke-width: 3;
+  }
+
+  .label-bg { fill: rgba(26,26,46,0.9); pointer-events: none; }
+  .label-text {
+    fill: #fff;
+    font-family: system-ui, sans-serif;
+    font-weight: 500;
+    pointer-events: none;
+    dominant-baseline: hanging;
+  }
+
+  .placeholder {
+    position: absolute; inset: 0;
+    display: flex; align-items: center; justify-content: center;
+    color: #888; text-align: center; padding: 20px;
+    font-size: 14px;
+  }
+  .placeholder code {
+    background: #d6dae3; padding: 2px 6px; border-radius: 3px;
+    font-size: 12px;
+  }
+  .error {
+    background: #fee; color: #c00; padding: 8px 12px;
+    border-bottom: 2px solid #c00;
+    font-size: 12px; font-family: ui-monospace, monospace;
+    white-space: pre-wrap; word-break: break-word;
+  }
+
+  /* Right panel — result list */
+  .panel-right h3 {
+    margin: 0;
+    font-size: 12px;
+    color: var(--text-soft);
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    font-weight: 700;
+  }
+  .full-text {
+    background: #f4f6fa;
+    border: 1px solid var(--border);
+    padding: 8px 10px;
+    border-radius: 5px;
+    font-family: ui-monospace, monospace;
+    font-size: 12px;
+    white-space: pre-wrap;
+    max-height: 160px;
+    overflow: auto;
+  }
+  .item-list { display: flex; flex-direction: column; gap: 5px; }
+  .item {
+    border: 1px solid var(--border);
+    border-left: 3px solid transparent;
+    border-radius: 4px;
+    padding: 7px 9px;
+    font-size: 12px;
+    cursor: pointer;
+    background: #fff;
+    transition: background 0.1s;
+  }
+  .item:hover { background: #f4f6fa; }
+  .item.active {
+    border-left-color: var(--c-active);
+    background: #fff7e8;
+  }
+  .item .item-head {
+    display: flex;
+    justify-content: space-between;
+    color: var(--muted);
+    font-size: 10px;
+    font-family: ui-monospace, monospace;
+    margin-bottom: 3px;
+    text-transform: uppercase;
+  }
+  .item .item-head .idx { color: var(--text-soft); font-weight: 700; }
+  .item.layer-paragraph .item-head .idx { color: var(--c-paragraph); }
+  .item.layer-block .item-head .idx { color: var(--c-block); }
+  .item.layer-word .item-head .idx { color: var(--c-word); }
+  .item .item-body { color: var(--text); word-break: break-word; }
+  .item .conf-bar {
+    display: inline-block; width: 32px; height: 4px;
+    background: #e6e8ee; border-radius: 2px; overflow: hidden;
+    vertical-align: middle; margin-right: 4px;
+  }
+  .conf-bar > i { display: block; height: 100%; background: #4d7cfe; }
+  .conf-bar.low > i { background: #f59e0b; }
+  .conf-bar.bad > i { background: #ef4444; }
+
+  .empty {
+    color: var(--muted);
+    font-size: 12px;
+    text-align: center;
+    padding: 16px;
+    font-style: italic;
+  }
+
+  /* Layer checkboxes ngay trên toolbar */
+  .layer-checks { display: flex; gap: 4px; }
+  .layer-checks label {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    padding: 4px 8px;
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    cursor: pointer;
+    font-size: 12px;
+    background: var(--panel);
+    user-select: none;
+  }
+  .layer-checks label:hover { background: #f4f6fa; }
+  .layer-checks label:has(input:checked) {
+    background: #eef3ff;
+    border-color: #4d7cfe;
+  }
+  .layer-checks label:has(input:disabled) {
+    opacity: 0.4;
+    cursor: not-allowed;
+  }
+  .layer-checks input[type=checkbox] { margin: 0; }
+  .layer-checks .dot {
+    display: inline-block;
+    width: 8px; height: 8px;
+    border-radius: 2px;
+  }
+
+  /* Tabs cho item list bên phải */
+  .list-tabs {
+    display: flex;
+    gap: 2px;
+    border-bottom: 1px solid var(--border);
+    margin-bottom: 4px;
+  }
+  .list-tabs button {
+    flex: 1;
+    background: transparent;
+    border: 0;
+    padding: 6px 8px;
+    font-size: 11px;
+    font-weight: 600;
+    color: #666;
+    cursor: pointer;
+    border-bottom: 2px solid transparent;
+    margin-bottom: -1px;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+  }
+  .list-tabs button.active { color: #4d7cfe; border-bottom-color: #4d7cfe; }
+  .list-tabs button:disabled { opacity: 0.4; cursor: not-allowed; }
+  .list-tabs button .count {
+    display: inline-block;
+    background: #e6e8ee;
+    color: #666;
+    font-size: 10px;
+    padding: 0 5px;
+    border-radius: 8px;
+    margin-left: 3px;
+  }
+  .list-tabs button.active .count { background: #4d7cfe; color: #fff; }
+
+  /* Legend màu trên toolbar */
+  .legend {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    font-size: 11px;
+    color: var(--muted);
+    margin-left: auto;
+  }
+  .legend .swatch {
+    display: inline-block;
+    width: 10px; height: 10px;
+    border-radius: 2px;
+    margin-right: 2px;
+    vertical-align: middle;
+  }
+  .legend .swatch.p { background: var(--c-paragraph); }
+  .legend .swatch.b { background: var(--c-block); }
+  .legend .swatch.w { background: var(--c-word); }
+  .legend .swatch.l { background: var(--c-low); }
+</style>
+</head>
+<body>
+<header>
+  <h1>OCR Preview</h1>
+  <span class="api-url" id="apiUrlLabel">https://ocr.spacecloud.fit</span>
+</header>
+
+<div class="container">
+  <!-- ===================== SIDEBAR LEFT ===================== -->
+  <aside class="sidebar">
+    <div>
+      <label class="field-label" for="apiUrl">API endpoint</label>
+      <input type="url" id="apiUrl" value="https://ocr.spacecloud.fit" />
+    </div>
+
+    <div>
+      <label class="field-label">Image source</label>
+      <div class="tabs">
+        <button id="tabUrl" class="active" data-tab="url" type="button">URL</button>
+        <button id="tabFile" data-tab="file" type="button">Upload file</button>
+      </div>
+      <div id="paneUrl">
+        <input type="url" id="imageUrl" placeholder="https://example.com/manga.png" />
+      </div>
+      <div id="paneFile" hidden>
+        <label class="drop-zone" id="dropZone">
+          <div class="icon">📁</div>
+          <p><strong>Click hoặc kéo thả ảnh</strong></p>
+          <p class="hint">PNG / JPG / WebP — max 10MB</p>
+          <input type="file" id="fileInput" accept="image/*" />
+          <div class="file-info" id="fileInfo" hidden></div>
+        </label>
+      </div>
+    </div>
+
+    <div>
+      <label class="field-label" for="lang">Language</label>
+      <select id="lang">
+        <option value="auto">auto (detect)</option>
+      </select>
+    </div>
+
+    <div>
+      <label class="field-label">Detection level (server)</label>
+      <div class="seg">
+        <input type="radio" name="level" id="levelBlock" value="block" />
+        <label for="levelBlock">Block</label>
+        <input type="radio" name="level" id="levelWord" value="word" checked />
+        <label for="levelWord">Word</label>
+      </div>
+      <p style="font-size:11px;color:var(--muted);margin:4px 2px 0;">
+        Word level luôn trả thêm <code style="font-size:10px">words[]</code> để overlay.
+      </p>
+    </div>
+
+    <div>
+      <label class="field-label">Reading order</label>
+      <div class="seg">
+        <input type="radio" name="order" id="orderAuto" value="auto" checked />
+        <label for="orderAuto">Auto</label>
+        <input type="radio" name="order" id="orderLtr" value="ltr" />
+        <label for="orderLtr">LTR</label>
+        <input type="radio" name="order" id="orderRtl" value="rtl" />
+        <label for="orderRtl">RTL</label>
+      </div>
+    </div>
+
+    <label class="switches">
+      <label><input type="checkbox" id="mergePara" checked /> Gộp thành paragraph</label>
+    </label>
+
+    <button class="primary" id="runBtn">Run OCR</button>
+
+    <div class="stats" id="stats" hidden>
+      <div class="row"><span class="key">Detected lang</span><span class="val" id="statLang">-</span></div>
+      <div class="row"><span class="key">Image size</span><span class="val" id="statSize">-</span></div>
+      <div class="row"><span class="key">Reading order</span><span class="val" id="statOrder">-</span></div>
+      <div class="row"><span class="key">Paragraphs</span><span class="val" id="statParas">-</span></div>
+      <div class="row"><span class="key">Blocks</span><span class="val" id="statBlocks">-</span></div>
+      <div class="row"><span class="key">Words</span><span class="val" id="statWords">-</span></div>
+      <div class="row"><span class="key">Avg confidence</span><span class="val" id="statAvgConf">-</span></div>
+      <div class="row"><span class="key">Server time</span><span class="val" id="statTime">-</span></div>
+    </div>
+  </aside>
+
+  <!-- ===================== CENTER PREVIEW ===================== -->
+  <main class="main">
+    <div class="toolbar">
+      <strong style="font-size:12px;">Show:</strong>
+      <div class="layer-checks">
+        <label><input type="checkbox" id="showPara" checked />
+          <span class="dot" style="background:var(--c-paragraph)"></span> Paragraph</label>
+        <label><input type="checkbox" id="showBlock" />
+          <span class="dot" style="background:var(--c-block)"></span> Block</label>
+        <label><input type="checkbox" id="showWord" />
+          <span class="dot" style="background:var(--c-word)"></span> Word</label>
+      </div>
+
+      <span class="sep"></span>
+
+      <button id="btnToggleImage" class="active" title="Ẩn / hiện ảnh nền">🖼️ Image</button>
+      <button id="btnToggleBox" class="active" title="Ẩn / hiện bbox">▢ Bbox</button>
+      <button id="btnToggleLabel" title="Ẩn / hiện text labels">Aa Labels</button>
+      <button id="btnToggleLowRed" class="active" title="Tô đỏ box conf &lt; 0.7">!</button>
+
+      <span class="sep"></span>
+
+      <button id="btnZoomOut" title="Zoom out (-)"></button>
+      <span class="zoom-info" id="zoomInfo">100%</span>
+      <button id="btnZoomIn" title="Zoom in (+)"></button>
+      <button id="btnZoomFit" title="Fit to viewport">Fit</button>
+      <button id="btnZoom1" title="100%">1:1</button>
+
+      <span class="legend">
+        <span><span class="swatch p"></span>paragraph</span>
+        <span><span class="swatch b"></span>block</span>
+        <span><span class="swatch w"></span>word</span>
+        <span><span class="swatch l"></span>low conf</span>
+      </span>
+    </div>
+
+    <div id="error" class="error" hidden></div>
+
+    <div class="canvas-wrap" id="canvasWrap">
+      <div class="placeholder" id="placeholder">
+        Nhập URL ảnh hoặc kéo thả file vào sidebar và bấm <code>Run OCR</code>.
+      </div>
+      <div class="stage-wrap" id="stageWrap" hidden>
+        <div class="stage" id="stage">
+          <img class="bg-image" id="bgImage" alt="" />
+          <svg class="overlay" id="overlay" xmlns="http://www.w3.org/2000/svg">
+            <g class="layer-paragraphs" id="layerParagraphs"></g>
+            <g class="layer-blocks" id="layerBlocks"></g>
+            <g class="layer-words" id="layerWords"></g>
+          </svg>
+        </div>
+      </div>
+    </div>
+  </main>
+
+  <!-- ===================== RIGHT PANEL ===================== -->
+  <aside class="panel-right">
+    <details>
+      <summary style="cursor:pointer;color:#4d7cfe;font-size:12px;">Full text</summary>
+      <div class="full-text" id="fullText">(chưa có)</div>
+    </details>
+    <div class="list-tabs" id="listTabs">
+      <button data-list="paragraph" class="active">Para <span class="count" id="cntPara">0</span></button>
+      <button data-list="block">Block <span class="count" id="cntBlock">0</span></button>
+      <button data-list="word" disabled>Word <span class="count" id="cntWord">0</span></button>
+    </div>
+    <div class="item-list" id="itemList">
+      <div class="empty">Chạy OCR để xem danh sách.</div>
+    </div>
+  </aside>
+</div>
+
+<script>
+const $ = (id) => document.getElementById(id);
+const apiUrlInput = $("apiUrl");
+const imageUrlInput = $("imageUrl");
+const fileInput = $("fileInput");
+const dropZone = $("dropZone");
+const fileInfo = $("fileInfo");
+const langSelect = $("lang");
+const runBtn = $("runBtn");
+const errorBox = $("error");
+const canvasWrap = $("canvasWrap");
+const stageWrap = $("stageWrap");
+const stage = $("stage");
+const overlay = $("overlay");
+const bgImage = $("bgImage");
+const placeholder = $("placeholder");
+const apiUrlLabel = $("apiUrlLabel");
+const itemList = $("itemList");
+const zoomInfo = $("zoomInfo");
+
+let lastResult = null;
+let activeTab = "url";
+let selectedFile = null;
+
+// View state
+const viewState = {
+  zoom: 1,
+  showImage: true,
+  showBox: true,
+  showLabel: false,
+  redLowConf: true,
+  layers: { paragraph: true, block: false, word: false },  // bật/tắt từng overlay độc lập
+  listLayer: "paragraph",                                  // tab nào đang hiện ở right panel
+  activeId: null,
+};
+
+// ==================== TAB URL/FILE ====================
+document.querySelectorAll(".tabs button").forEach((btn) => {
+  btn.addEventListener("click", () => {
+    document.querySelectorAll(".tabs button").forEach((b) => b.classList.remove("active"));
+    btn.classList.add("active");
+    activeTab = btn.dataset.tab;
+    $("paneUrl").hidden = activeTab !== "url";
+    $("paneFile").hidden = activeTab !== "file";
+  });
+});
+
+// ==================== FILE INPUT ====================
+fileInput.addEventListener("change", (e) => setFile(e.target.files[0]));
+dropZone.addEventListener("dragover", (e) => { e.preventDefault(); dropZone.classList.add("dragover"); });
+dropZone.addEventListener("dragleave", () => dropZone.classList.remove("dragover"));
+dropZone.addEventListener("drop", (e) => {
+  e.preventDefault();
+  dropZone.classList.remove("dragover");
+  const f = e.dataTransfer.files[0];
+  if (f) setFile(f);
+});
+function setFile(f) {
+  if (!f) return;
+  if (!f.type.startsWith("image/")) { showError(`File "${f.name}" không phải ảnh`); return; }
+  if (f.size > 10 * 1024 * 1024) { showError(`File ${(f.size/1024/1024).toFixed(1)}MB vượt 10MB`); return; }
+  selectedFile = f;
+  fileInfo.textContent = `${f.name}  (${(f.size/1024).toFixed(1)} KB)`;
+  fileInfo.hidden = false;
+}
+
+// ==================== LANGUAGES ====================
+async function loadLanguages() {
+  const apiUrl = apiUrlInput.value.replace(/\/+$/, "");
+  apiUrlLabel.textContent = apiUrl;
+  try {
+    const r = await fetch(`${apiUrl}/v1/languages`);
+    if (!r.ok) throw new Error(`HTTP ${r.status}`);
+    const data = await r.json();
+    while (langSelect.options.length > 1) langSelect.remove(1);
+    for (const grp of data.model_groups || []) {
+      const og = document.createElement("optgroup");
+      og.label = `${grp.label}  (${grp.model})`;
+      for (const lang of grp.languages || []) {
+        const opt = document.createElement("option");
+        opt.value = lang.code;
+        opt.textContent = `${lang.code} — ${lang.label}`;
+        og.appendChild(opt);
+      }
+      langSelect.appendChild(og);
+    }
+  } catch (err) {
+    showError(`Không load /v1/languages từ ${apiUrl}: ${err.message}`);
+  }
+}
+apiUrlInput.addEventListener("change", loadLanguages);
+loadLanguages();
+
+// ==================== RUN OCR ====================
+runBtn.addEventListener("click", runOcr);
+imageUrlInput.addEventListener("keydown", (e) => { if (e.key === "Enter") runOcr(); });
+
+async function runOcr() {
+  const apiUrl = apiUrlInput.value.replace(/\/+$/, "");
+  const lang = langSelect.value;
+  const level = document.querySelector('input[name="level"]:checked').value;
+  const reading_order = document.querySelector('input[name="order"]:checked').value;
+  const merge_paragraphs = $("mergePara").checked;
+
+  if (activeTab === "url" && !imageUrlInput.value.trim()) { showError("Nhập Image URL"); return; }
+  if (activeTab === "file" && !selectedFile) { showError("Chọn file ảnh"); return; }
+
+  hideError();
+  placeholder.textContent = "Đang gọi OCR...";
+  placeholder.hidden = false;
+  stageWrap.hidden = true;
+  runBtn.disabled = true;
+  runBtn.textContent = "Đang chạy...";
+
+  try {
+    let resp;
+    let imageObjectUrl = null;
+
+    if (activeTab === "url") {
+      resp = await fetch(`${apiUrl}/v1/ocr`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          image_url: imageUrlInput.value.trim(),
+          lang, level, merge_paragraphs, reading_order,
+        }),
+      });
+    } else {
+      const fd = new FormData();
+      fd.append("file", selectedFile);
+      fd.append("lang", lang);
+      fd.append("level", level);
+      fd.append("merge_paragraphs", String(merge_paragraphs));
+      fd.append("reading_order", reading_order);
+      resp = await fetch(`${apiUrl}/v1/ocr/upload`, { method: "POST", body: fd });
+      imageObjectUrl = URL.createObjectURL(selectedFile);
+    }
+
+    const text = await resp.text();
+    let data;
+    try { data = JSON.parse(text); } catch { throw new Error(`Server trả non-JSON: ${text.slice(0, 200)}`); }
+    if (!resp.ok) {
+      const detail = data.detail || data.message || JSON.stringify(data);
+      throw new Error(`HTTP ${resp.status}: ${typeof detail === "string" ? detail : JSON.stringify(detail)}`);
+    }
+
+    // Tải ảnh để lấy size hiển thị (không cần crossOrigin — chỉ display, không read pixel)
+    const img = new Image();
+    await new Promise((res, rej) => {
+      img.onload = res;
+      img.onerror = () => rej(new Error("Không load được ảnh — URL invalid?"));
+      img.src = imageObjectUrl || imageUrlInput.value.trim();
+    });
+
+    lastResult = { response: data, imageUrl: imageObjectUrl || imageUrlInput.value.trim(), level };
+    render();
+  } catch (err) {
+    showError(err.message);
+    placeholder.textContent = "Lỗi — xem error bên trên.";
+  } finally {
+    runBtn.disabled = false;
+    runBtn.textContent = "Run OCR";
+  }
+}
+
+// ==================== RENDER ====================
+function render() {
+  if (!lastResult) return;
+  const { response, imageUrl, level } = lastResult;
+
+  placeholder.hidden = true;
+  stageWrap.hidden = false;
+
+  const W = response.image_width;
+  const H = response.image_height;
+  bgImage.src = imageUrl;
+  bgImage.width = W;
+  bgImage.height = H;
+  stage.style.width = W + "px";
+  stage.style.height = H + "px";
+  overlay.setAttribute("width", W);
+  overlay.setAttribute("height", H);
+  overlay.setAttribute("viewBox", `0 0 ${W} ${H}`);
+
+  // Build layers
+  buildLayer($("layerParagraphs"), (response.paragraphs || []).map((p, i) => ({
+    id: `p${i}`, layer: "paragraph", bbox: p.bbox, text: p.text,
+    confidence: p.avg_confidence, meta: `${p.line_count} lines`,
+  })));
+  buildLayer($("layerBlocks"), (response.text_blocks || []).map((b, i) => ({
+    id: `b${i}`, layer: "block", bbox: b.bbox, text: b.text,
+    confidence: b.confidence,
+  })));
+  const wordItems = [];
+  (response.text_blocks || []).forEach((b, bi) => {
+    (b.words || []).forEach((w, wi) => {
+      wordItems.push({
+        id: `w${bi}_${wi}`, layer: "word", bbox: w.bbox,
+        text: w.text, confidence: b.confidence,
+      });
+    });
+  });
+  buildLayer($("layerWords"), wordItems);
+
+  // Enable/disable checkbox layer + tabs theo data có sẵn
+  const hasWords = wordItems.length > 0;
+  const hasParas = !!(response.paragraphs && response.paragraphs.length > 0);
+  $("showWord").disabled = !hasWords;
+  $("showPara").disabled = !hasParas;
+  if (!hasWords) viewState.layers.word = false;
+  if (!hasParas) viewState.layers.paragraph = false;
+  $("showPara").checked = viewState.layers.paragraph;
+  $("showBlock").checked = viewState.layers.block;
+  $("showWord").checked = viewState.layers.word;
+
+  // Tabs cho item list
+  $("cntPara").textContent = (response.paragraphs || []).length;
+  $("cntBlock").textContent = (response.text_blocks || []).length;
+  $("cntWord").textContent = wordItems.length;
+  $("listTabs").querySelector('[data-list="paragraph"]').disabled = !hasParas;
+  $("listTabs").querySelector('[data-list="word"]').disabled = !hasWords;
+  if (viewState.listLayer === "paragraph" && !hasParas) viewState.listLayer = "block";
+  if (viewState.listLayer === "word" && !hasWords) viewState.listLayer = "block";
+
+  // Stats
+  const blocks = response.text_blocks || [];
+  const paras = response.paragraphs || [];
+  const totalWords = blocks.reduce((s, b) => s + (b.words?.length || 0), 0);
+  const avgConf = blocks.length ? blocks.reduce((a, b) => a + b.confidence, 0) / blocks.length : 0;
+  $("stats").hidden = false;
+  $("statLang").textContent = response.detected_lang || "—";
+  $("statSize").textContent = `${W} × ${H}`;
+  const order = response.reading_order || "—";
+  $("statOrder").innerHTML = order === "—" ? "—" :
+    `<span class="badge ${order}">${order.toUpperCase()}</span>`;
+  $("statParas").textContent = response.paragraphs ? paras.length : "(tắt)";
+  $("statBlocks").textContent = blocks.length;
+  $("statWords").textContent = level === "word" ? totalWords : "(bật Word level)";
+  $("statAvgConf").textContent = `${(avgConf * 100).toFixed(1)}%`;
+  $("statTime").textContent = `${response.processing_time_ms} ms`;
+
+  applyView();
+  renderItemList();
+  fitToViewport();
+  $("fullText").textContent = response.full_text || "(rỗng)";
+}
+
+function buildLayer(g, items) {
+  g.innerHTML = "";
+  for (const it of items) {
+    if (!it.bbox || it.bbox.length < 4) continue;
+    const points = it.bbox.map((p) => `${p[0]},${p[1]}`).join(" ");
+    const isLow = viewState.redLowConf && it.confidence < 0.7;
+
+    const fill = document.createElementNS("http://www.w3.org/2000/svg", "polygon");
+    fill.setAttribute("points", points);
+    fill.setAttribute("class", `bbox-fill layer-${it.layer}`);
+    fill.dataset.id = it.id;
+    fill.dataset.text = it.text;
+    fill.dataset.conf = it.confidence;
+    fill.addEventListener("mouseenter", () => setActive(it.id, true));
+    fill.addEventListener("mouseleave", () => setActive(null, false));
+    fill.addEventListener("click", () => focusItem(it.id));
+
+    const stroke = document.createElementNS("http://www.w3.org/2000/svg", "polygon");
+    stroke.setAttribute("points", points);
+    stroke.setAttribute("class", `bbox layer-${it.layer}${isLow ? " low" : ""}`);
+    stroke.dataset.id = it.id;
+    stroke.dataset.conf = it.confidence;
+
+    g.appendChild(fill);
+    g.appendChild(stroke);
+
+    // Label (tách group để toggle riêng)
+    if (it.text) {
+      const xs = it.bbox.map((p) => p[0]);
+      const ys = it.bbox.map((p) => p[1]);
+      const xMin = Math.min(...xs);
+      const yMin = Math.min(...ys);
+      const fontSize = Math.max(11, Math.min(24, Math.round((Math.max(...ys) - yMin) * 0.7)));
+      const label = it.text.length > 30 ? it.text.slice(0, 27) + "…" : it.text;
+      const padding = 4;
+      const approxWidth = label.length * fontSize * 0.55 + padding * 2;
+
+      const labelGroup = document.createElementNS("http://www.w3.org/2000/svg", "g");
+      labelGroup.setAttribute("class", "label-group");
+      labelGroup.dataset.id = it.id;
+
+      const bg = document.createElementNS("http://www.w3.org/2000/svg", "rect");
+      bg.setAttribute("class", "label-bg");
+      bg.setAttribute("x", xMin);
+      bg.setAttribute("y", Math.max(0, yMin - fontSize - padding * 2));
+      bg.setAttribute("width", approxWidth);
+      bg.setAttribute("height", fontSize + padding * 2);
+      bg.setAttribute("rx", 2);
+
+      const txt = document.createElementNS("http://www.w3.org/2000/svg", "text");
+      txt.setAttribute("class", "label-text");
+      txt.setAttribute("x", xMin + padding);
+      txt.setAttribute("y", Math.max(2, yMin - fontSize - padding));
+      txt.setAttribute("font-size", fontSize);
+      txt.textContent = label;
+
+      labelGroup.appendChild(bg);
+      labelGroup.appendChild(txt);
+      g.appendChild(labelGroup);
+    }
+  }
+}
+
+function renderItemList() {
+  if (!lastResult) return;
+  const { response } = lastResult;
+  let items = [];
+  if (viewState.listLayer === "paragraph") {
+    items = (response.paragraphs || []).map((p, i) => ({
+      id: `p${i}`, layer: "paragraph", text: p.text,
+      conf: p.avg_confidence, meta: `${p.line_count} lines · idx ${p.block_indices.join(",")}`,
+    }));
+  } else if (viewState.listLayer === "block") {
+    items = (response.text_blocks || []).map((b, i) => ({
+      id: `b${i}`, layer: "block", text: b.text,
+      conf: b.confidence,
+    }));
+  } else {
+    (response.text_blocks || []).forEach((b, bi) => {
+      (b.words || []).forEach((w, wi) => {
+        items.push({
+          id: `w${bi}_${wi}`, layer: "word", text: w.text,
+          conf: b.confidence, meta: `block ${bi}`,
+        });
+      });
+    });
+  }
+  // Sync tab active state
+  $("listTabs").querySelectorAll("button").forEach((btn) => {
+    btn.classList.toggle("active", btn.dataset.list === viewState.listLayer);
+  });
+
+  itemList.innerHTML = "";
+  if (items.length === 0) {
+    itemList.innerHTML = `<div class="empty">Không có item ở layer này.</div>`;
+    return;
+  }
+  items.forEach((it, i) => {
+    const div = document.createElement("div");
+    div.className = `item layer-${it.layer}`;
+    div.dataset.id = it.id;
+    let barCls = "";
+    if (it.conf < 0.5) barCls = "bad";
+    else if (it.conf < 0.8) barCls = "low";
+    div.innerHTML = `
+      <div class="item-head">
+        <span class="idx">#${i + 1}${it.meta ? "  " + it.meta : ""}</span>
+        <span><span class="conf-bar ${barCls}"><i style="width:${(it.conf*100).toFixed(0)}%"></i></span>${(it.conf*100).toFixed(0)}%</span>
+      </div>
+      <div class="item-body"></div>
+    `;
+    div.children[1].textContent = it.text;
+    div.addEventListener("mouseenter", () => setActive(it.id, true));
+    div.addEventListener("mouseleave", () => setActive(null, false));
+    div.addEventListener("click", () => focusItem(it.id));
+    itemList.appendChild(div);
+  });
+}
+
+// ==================== ACTIVE / HOVER SYNC ====================
+function setActive(id, isHover) {
+  // Remove all .active
+  overlay.querySelectorAll(".active").forEach((el) => el.classList.remove("active"));
+  itemList.querySelectorAll(".active").forEach((el) => el.classList.remove("active"));
+  if (id) {
+    overlay.querySelectorAll(`[data-id="${id}"]`).forEach((el) => el.classList.add("active"));
+    const item = itemList.querySelector(`[data-id="${id}"]`);
+    if (item) {
+      item.classList.add("active");
+      if (isHover) item.scrollIntoView({ block: "nearest", behavior: "smooth" });
+    }
+  }
+  viewState.activeId = id || null;
+}
+
+function focusItem(id) {
+  setActive(id, true);
+  // Scroll viewport tới bbox center
+  const el = overlay.querySelector(`.bbox[data-id="${id}"]`);
+  if (!el) return;
+  const bb = el.getBBox();
+  const cx = (bb.x + bb.width / 2) * viewState.zoom;
+  const cy = (bb.y + bb.height / 2) * viewState.zoom;
+  const wrap = $("stageWrap");
+  wrap.scrollTo({
+    left: cx - wrap.clientWidth / 2,
+    top: cy - wrap.clientHeight / 2,
+    behavior: "smooth",
+  });
+}
+
+// ==================== APPLY VIEW STATE ====================
+function applyView() {
+  // Image visibility
+  stage.classList.toggle("image-hidden", !viewState.showImage);
+
+  // Layer visibility — 3 layer độc lập
+  $("layerParagraphs").classList.toggle("visible",
+    viewState.layers.paragraph && viewState.showBox);
+  $("layerBlocks").classList.toggle("visible",
+    viewState.layers.block && viewState.showBox);
+  $("layerWords").classList.toggle("visible",
+    viewState.layers.word && viewState.showBox);
+
+  // Label visibility (control bằng CSS query selector)
+  overlay.querySelectorAll(".label-group").forEach((el) => {
+    el.style.display = viewState.showLabel ? "" : "none";
+  });
+
+  // Re-color low conf
+  overlay.querySelectorAll(".bbox").forEach((el) => {
+    const c = parseFloat(el.dataset.conf || "1");
+    el.classList.toggle("low", viewState.redLowConf && c < 0.7);
+  });
+
+  // Toolbar button states
+  $("btnToggleImage").classList.toggle("active", viewState.showImage);
+  $("btnToggleBox").classList.toggle("active", viewState.showBox);
+  $("btnToggleLabel").classList.toggle("active", viewState.showLabel);
+  $("btnToggleLowRed").classList.toggle("active", viewState.redLowConf);
+
+  // Zoom
+  stage.style.transform = `scale(${viewState.zoom})`;
+  zoomInfo.textContent = `${Math.round(viewState.zoom * 100)}%`;
+}
+
+// ==================== ZOOM ====================
+function setZoom(z) {
+  viewState.zoom = Math.max(0.1, Math.min(8, z));
+  applyView();
+}
+function fitToViewport() {
+  if (!lastResult) return;
+  const wrap = $("stageWrap");
+  const W = lastResult.response.image_width;
+  const H = lastResult.response.image_height;
+  const z = Math.min(wrap.clientWidth / W, wrap.clientHeight / H, 1) * 0.98;
+  setZoom(z);
+}
+$("btnZoomIn").addEventListener("click", () => setZoom(viewState.zoom * 1.25));
+$("btnZoomOut").addEventListener("click", () => setZoom(viewState.zoom / 1.25));
+$("btnZoom1").addEventListener("click", () => setZoom(1));
+$("btnZoomFit").addEventListener("click", fitToViewport);
+
+// Wheel + Ctrl/Cmd → zoom around cursor
+$("stageWrap").addEventListener("wheel", (e) => {
+  if (!e.ctrlKey && !e.metaKey) return;
+  e.preventDefault();
+  const wrap = $("stageWrap");
+  const before = viewState.zoom;
+  const factor = e.deltaY < 0 ? 1.15 : 1 / 1.15;
+  const after = Math.max(0.1, Math.min(8, before * factor));
+  // Zoom around mouse position
+  const rect = wrap.getBoundingClientRect();
+  const mx = e.clientX - rect.left + wrap.scrollLeft;
+  const my = e.clientY - rect.top + wrap.scrollTop;
+  setZoom(after);
+  wrap.scrollLeft = mx * (after / before) - (e.clientX - rect.left);
+  wrap.scrollTop = my * (after / before) - (e.clientY - rect.top);
+}, { passive: false });
+
+// Drag to pan (middle mouse / shift+left)
+let dragging = false;
+let dragStart = null;
+$("stageWrap").addEventListener("mousedown", (e) => {
+  if (e.button === 1 || (e.button === 0 && e.shiftKey)) {
+    dragging = true;
+    const wrap = $("stageWrap");
+    dragStart = { x: e.clientX, y: e.clientY, sl: wrap.scrollLeft, st: wrap.scrollTop };
+    e.preventDefault();
+  }
+});
+window.addEventListener("mousemove", (e) => {
+  if (!dragging) return;
+  const wrap = $("stageWrap");
+  wrap.scrollLeft = dragStart.sl - (e.clientX - dragStart.x);
+  wrap.scrollTop = dragStart.st - (e.clientY - dragStart.y);
+});
+window.addEventListener("mouseup", () => { dragging = false; });
+
+// ==================== TOOLBAR BUTTONS ====================
+$("btnToggleImage").addEventListener("click", () => {
+  viewState.showImage = !viewState.showImage; applyView();
+});
+$("btnToggleBox").addEventListener("click", () => {
+  viewState.showBox = !viewState.showBox; applyView();
+});
+$("btnToggleLabel").addEventListener("click", () => {
+  viewState.showLabel = !viewState.showLabel; applyView();
+});
+$("btnToggleLowRed").addEventListener("click", () => {
+  viewState.redLowConf = !viewState.redLowConf;
+  applyView();
+});
+
+// 3 checkbox toggle layer độc lập
+$("showPara").addEventListener("change", () => { viewState.layers.paragraph = $("showPara").checked; applyView(); });
+$("showBlock").addEventListener("change", () => { viewState.layers.block = $("showBlock").checked; applyView(); });
+$("showWord").addEventListener("change", () => { viewState.layers.word = $("showWord").checked; applyView(); });
+
+// Tabs cho item list bên phải
+$("listTabs").addEventListener("click", (e) => {
+  const btn = e.target.closest("button[data-list]");
+  if (!btn || btn.disabled) return;
+  viewState.listLayer = btn.dataset.list;
+  renderItemList();
+});
+
+// ==================== KEYBOARD ====================
+window.addEventListener("keydown", (e) => {
+  if (e.target.matches("input, textarea, select")) return;
+  if (e.key === "+" || e.key === "=") setZoom(viewState.zoom * 1.25);
+  else if (e.key === "-") setZoom(viewState.zoom / 1.25);
+  else if (e.key === "0") setZoom(1);
+  else if (e.key === "f" || e.key === "F") fitToViewport();
+  else if (e.key === "i" || e.key === "I") { viewState.showImage = !viewState.showImage; applyView(); }
+  else if (e.key === "b" || e.key === "B") { viewState.showBox = !viewState.showBox; applyView(); }
+  else if (e.key === "l" || e.key === "L") { viewState.showLabel = !viewState.showLabel; applyView(); }
+  // Phím 1/2/3 toggle overlay layer (không phải switch — bật/tắt độc lập)
+  else if (e.key === "1" && !$("showPara").disabled) { $("showPara").click(); }
+  else if (e.key === "2") { $("showBlock").click(); }
+  else if (e.key === "3" && !$("showWord").disabled) { $("showWord").click(); }
+});
+
+// ==================== ERROR ====================
+function showError(msg) { errorBox.textContent = msg; errorBox.hidden = false; }
+function hideError() { errorBox.hidden = true; }
+
+// Handle window resize → re-fit
+window.addEventListener("resize", () => { if (lastResult && viewState.zoom < 0.99) fitToViewport(); });
+</script>
+</body>
+</html>

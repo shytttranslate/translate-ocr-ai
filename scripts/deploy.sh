@@ -81,7 +81,7 @@ if [[ ! -d "$VENV_API" ]]; then
     uv venv --python 3.12 "$VENV_API"
 fi
 VIRTUAL_ENV="$VENV_API" uv pip install --upgrade pip wheel setuptools
-VIRTUAL_ENV="$VENV_API" uv pip install -r api/requirements.txt
+VIRTUAL_ENV="$VENV_API" uv pip install -r translate_service/requirements.txt
 # PaddleOCR v3 (PP-OCRv5). paddlepaddle GPU/CPU phụ thuộc image.
 # Vast.ai nodes có CUDA → ưu tiên GPU; fallback CPU nếu pip không tìm thấy wheel GPU.
 if ! VIRTUAL_ENV="$VENV_API" uv pip install "paddlepaddle-gpu>=3.0.0,<4.0" 2>/dev/null; then
@@ -218,7 +218,7 @@ for i in $(seq 1 30); do
     sleep 2
 done
 
-$SC start vbk-ai:vbk-api 2>&1 | head -5 || true
+$SC start vbk-ai:vbk-translate 2>&1 | head -5 || true
 echo "    Đợi API gateway ready (port 9002)..."
 sleep 3
 for i in $(seq 1 30); do
@@ -250,7 +250,7 @@ echo ""
 echo " Quản process (supervisord):"
 echo "   $SC status vbk-ai:*                          # check status"
 echo "   $SC restart vbk-ai:vbk-vllm-translator       # restart vLLM"
-echo "   $SC restart vbk-ai:vbk-api                   # restart API"
+echo "   $SC restart vbk-ai:vbk-translate                   # restart API"
 echo "   $SC stop vbk-ai:* / $SC start vbk-ai:*       # tắt/bật toàn group"
 echo "   tail -f $LOG_DIR/vllm-translator.log $LOG_DIR/api.log"
 echo "   $ROOT/scripts/check_services.sh              # health snapshot"

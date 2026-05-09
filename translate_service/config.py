@@ -23,12 +23,6 @@ class Settings(BaseSettings):
     vllm_request_timeout_s: float = 60.0
     vllm_connect_timeout_s: float = 3.0
 
-    # OCR service đứng riêng port 9003 — gateway proxy /v1/ocr → service này.
-    ocr_service_url: str = "http://127.0.0.1:9003"
-    ocr_request_timeout_s: float = 120.0
-
-    image_max_bytes: int = 10 * 1024 * 1024
-
     enable_metrics: bool = True
 
     @property

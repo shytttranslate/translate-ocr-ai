@@ -13,29 +13,36 @@ if [[ -f "$ROOT/.env" ]]; then
     set +a
 fi
 
-# PaddlePaddle 3.x: tắt mkldnn + PIR executor — workaround bug.
+# PaddlePaddle 3.x: tắt mkldnn + PIR executor — workaround bug oneDNN PIR attribute.
 export FLAGS_use_mkldnn="${FLAGS_use_mkldnn:-0}"
 export FLAGS_enable_pir_in_executor="${FLAGS_enable_pir_in_executor:-0}"
 
-# Engine pool: số instance per lang. Pool lớn → parallel cao, RAM tăng.
-# CPU mode init ~2s/engine. 8 instance × 4 lang = ~32 engine, RAM ~10-15GB OK trong 377GB.
+# Engine pool — 1 worker × pool 8 = 8 parallel inference per lang.
+# CPU release GIL trong predict() nên thread pool 8 effective parallelism.
 export PADDLEOCR_POOL_SIZE="${PADDLEOCR_POOL_SIZE:-8}"
 
-# Device: PHẢI là 'cpu' trên Blackwell SM 12.0!
-# paddlepaddle-gpu cu126 wheel build cho SM 7.0-9.0. Blackwell SM 12.0 không trong target list
-# → detection model GPU inference silent fail (dt_polys=0, không crash).
-# CPU mode work bình thường, RAM 377GB dư cho pool size lớn.
+# Device: BẮT BUỘC 'cpu' trên Blackwell SM 12.0!
+# paddlepaddle-gpu cu126 wheel không có kernel SM 12.0 → detection silent fail.
 export PADDLEOCR_DEVICE="${PADDLEOCR_DEVICE:-cpu}"
-# Mobile detection model: nhanh 3-5x trên CPU, accuracy giảm ~5%.
-# Default 1 vì pipeline nhận diện text rõ ràng (chụp screen/document scan) là chính.
-export PADDLEOCR_USE_MOBILE="${PADDLEOCR_USE_MOBILE:-1}"
+# Server detection model: accuracy cao hơn mobile ~5%, chậm hơn 3-5x trên CPU.
+export PADDLEOCR_USE_MOBILE="${PADDLEOCR_USE_MOBILE:-0}"
 
-# 1 worker để CUDA context init 1 lần. Pool 8 lo concurrency. KHÔNG tăng workers > 1
-# nếu paddle GPU mode, vì uvicorn fork() làm CUDA context die ở child.
+# Resize ảnh > MAX_DIMENSION (default 1600px) → giảm latency 2-3x với ảnh lớn.
+export PADDLEOCR_MAX_DIMENSION="${PADDLEOCR_MAX_DIMENSION:-1600}"
+# Textline orientation classification — tắt mặc định (nhanh ~10-15%). Bật nếu text xoay 90/180/270°.
+export PADDLEOCR_USE_TEXTLINE_ORI="${PADDLEOCR_USE_TEXTLINE_ORI:-0}"
+# LRU cache size — repeat request cùng ảnh + lang trả ngay (ms).
+export PADDLEOCR_CACHE_SIZE="${PADDLEOCR_CACHE_SIZE:-256}"
+
+# Workers: paddle CPU + fork CÓ ISSUE — đôi khi worker crash khi xử lý ảnh lớn
+# (PIL/numpy/paddle Conv kernel race condition). Giảm xuống 1 cho stable.
+# Concurrency dựa vào engine pool size + asyncio. Trade-off throughput cho stability.
+WORKERS="${OCR_WORKERS:-1}"
+
 exec "$ROOT/.venv-api/bin/uvicorn" main:app \
     --host 0.0.0.0 \
     --port 9003 \
-    --workers 1 \
+    --workers "$WORKERS" \
     --loop uvloop \
     --http httptools \
     --access-log
