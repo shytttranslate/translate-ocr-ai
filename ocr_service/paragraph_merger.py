@@ -9,30 +9,37 @@ nhiều dòng sẽ ra nhiều block riêng lẻ:
 
 Module này gộp lại thành 1 paragraph: "There are so many kinds of gradation tones."
 
-Thuật toán:
-  1. Đo `line_height` trung vị từ chiều cao bbox.
-  2. Cặp 2 block thuộc cùng paragraph nếu:
-       - x-overlap ratio (theo box hẹp hơn) >= `x_overlap_threshold`
-       - y-gap dọc (top của block dưới - bottom của block trên) <= `line_height * line_gap_ratio`
-       - chênh chiều cao tương đối <= `height_diff_ratio` (tránh gộp tiêu đề + body)
-  3. Union-Find gom cluster.
-  4. Trong cluster, sort theo reading order rồi nối text:
-       - Nếu cluster chứa ký tự CJK (Trung/Nhật/Hàn) → nối "" (không space).
-       - Còn lại → nối " " (giả định wrap, không phải câu mới).
-  5. Sort các paragraph theo reading order toàn ảnh:
-       - "ltr": row-first ascending x
-       - "rtl": row-first descending x (manga JP)
-       - "auto": detect dựa vào aspect ratio + tỉ lệ ký tự CJK
+Thuật toán **2 pass**:
 
-Module thuần pure function — không phụ thuộc PaddleOCR runtime, dễ unit test.
+  Pass 1 — cluster theo geometry (gap + x-overlap), height_diff loose:
+    Gom các line gần nhau theo y, cùng cột x.
+
+  Pass 2 — split cluster theo style break (height jump OR boldness jump):
+    Trong cùng card UI, header (bold, h cao) + body (regular, h thấp) thường có
+    geometry rất gần nhau (gap 7-15px) → Pass 1 gộp chúng. Pass 2 phát hiện
+    style transition (font weight + size khác) để tách thành paragraph riêng.
+
+Tham số trọng yếu:
+  - line_gap_ratio: y-gap tối đa giữa 2 dòng cùng paragraph (× line_height).
+  - style_height_jump: ratio chênh height giữa 2 line liền kề báo hiệu style break.
+  - style_boldness_jump: ratio chênh boldness báo hiệu style break.
+
+Module pure function (image_gray optional). Unit test friendly.
 """
 from __future__ import annotations
 
 from dataclasses import dataclass, field
 from statistics import median
-from typing import Iterable, Literal
+from typing import Iterable, Literal, Optional
 
 from engine import OcrLine
+
+try:
+    import numpy as np
+    _NumpyArr = "np.ndarray"
+except ImportError:  # numpy luôn có khi paddleocr install, nhưng safety import
+    np = None  # type: ignore[assignment]
+    _NumpyArr = "object"
 
 
 ReadingOrder = Literal["ltr", "rtl", "auto"]
@@ -79,6 +86,26 @@ def _has_cjk(text: str) -> bool:
     return False
 
 
+def is_meaningless_text(text: str) -> bool:
+    """Detect text vô nghĩa từ OCR misread (icon/decoration/artifact).
+
+    Conservative filter — chỉ bắt 2 pattern:
+    1. Chứa backslash `\\`: PaddleOCR đọc icon stylized (vd tên tab `文A`)
+       thành LaTeX-like `$\\a$` hoặc `\\A`. Backslash KHÔNG xuất hiện trong text
+       Latin/Cyrillic/CJK thực tế → 100% là garbage.
+    2. Toàn ký hiệu/dấu câu, length ≥ 2: không có alphanumeric AND không có CJK.
+       Length 1 (vd `?`, `!`) giữ lại vì có thể là bubble exclamation legitimate.
+    """
+    s = text.strip()
+    if not s:
+        return True
+    if "\\" in s:
+        return True
+    if any(c.isalnum() for c in s) or _has_cjk(s):
+        return False
+    return len(s) >= 2
+
+
 class _UnionFind:
     def __init__(self, n: int) -> None:
         self.parent = list(range(n))
@@ -123,24 +150,99 @@ def _detect_reading_order_from_extents(
     return "ltr"
 
 
+def _bbox_boldness(image_gray, bbox: list[list[int]], dark_threshold: int = 100) -> float:
+    """Tỷ lệ pixel tối trong bbox — proxy cho font weight (bold vs regular).
+
+    Bold text: stroke dày → nhiều pixel tối → ratio cao.
+    Regular text: stroke mảnh → ratio thấp.
+    Same paragraph thường có boldness ratio chênh < 30%.
+    """
+    if image_gray is None:
+        return 0.0
+    x1, y1, x2, y2 = _bbox_extents(bbox)
+    H, W = image_gray.shape[:2]
+    x1, x2 = max(0, x1), min(W, x2)
+    y1, y2 = max(0, y1), min(H, y2)
+    if x2 <= x1 or y2 <= y1:
+        return 0.0
+    crop = image_gray[y1:y2, x1:x2]
+    if crop.size == 0:
+        return 0.0
+    return float((crop < dark_threshold).mean())
+
+
+def _split_cluster_by_style(
+    indices: list[int],
+    blocks: list[OcrLine],
+    image_gray,
+    height_jump: float = 0.40,
+    boldness_jump: float = 0.40,
+) -> list[list[int]]:
+    """Pass 2: split cluster theo style break — OR logic với threshold cao.
+
+    Sort lines by y_center, scan adjacent pairs. Split nếu:
+    - Height ratio > 0.40 (font size khác RÕ RỆT, vd 32px vs 48px = ratio 0.33 KHÔNG split) OR
+    - Boldness ratio > 0.40 (font weight khác RÕ RỆT, vd bold→regular)
+
+    Threshold cao + OR logic → chỉ trigger khi signal MẠNH:
+    - Trong cùng paragraph: h variance ~0.10-0.35 (do descender/ascender + short
+      lines như "dim" có h cao hơn full line do PaddleOCR padding), b stable
+    - Header → body cùng size khác weight: b > 0.40 trigger
+    - Header → body khác size: h > 0.40 trigger
+
+    Khi image_gray=None: chỉ dùng height jump.
+    """
+    if len(indices) <= 1:
+        return [list(indices)]
+
+    extents = [_bbox_extents(blocks[i].bbox) for i in indices]
+    heights = [max(1, e[3] - e[1]) for e in extents]
+    boldnesses = [_bbox_boldness(image_gray, blocks[i].bbox) for i in indices]
+    y_centers = [(e[1] + e[3]) / 2 for e in extents]
+
+    order = sorted(range(len(indices)), key=lambda k: y_centers[k])
+
+    sub_clusters: list[list[int]] = []
+    current: list[int] = [indices[order[0]]]
+    for pos in range(1, len(order)):
+        prev_k = order[pos - 1]
+        cur_k = order[pos]
+        h_diff = abs(heights[cur_k] - heights[prev_k]) / max(heights[cur_k], heights[prev_k])
+        split = h_diff > height_jump
+        if not split and image_gray is not None:
+            b_max = max(boldnesses[cur_k], boldnesses[prev_k], 0.01)
+            b_diff = abs(boldnesses[cur_k] - boldnesses[prev_k]) / b_max
+            split = b_diff > boldness_jump
+        if split:
+            sub_clusters.append(current)
+            current = [indices[cur_k]]
+        else:
+            current.append(indices[cur_k])
+    sub_clusters.append(current)
+    return sub_clusters
+
+
 def merge_blocks_into_paragraphs(
     blocks: list[OcrLine],
     reading_order: ReadingOrder = "auto",
     x_overlap_threshold: float = 0.3,
-    line_gap_ratio: float = 1.5,
-    height_diff_ratio: float = 0.7,
+    line_gap_ratio: float = 0.8,
+    image_gray=None,
 ) -> list[OcrParagraph]:
-    """Gộp các OCR block liền kề thành paragraph.
+    """Gộp các OCR block thành paragraph qua 2-pass clustering.
 
     Args:
         blocks: list block gốc từ PaddleOCR.
-        reading_order: "ltr" | "rtl" | "auto" (default auto detect).
-        x_overlap_threshold: 2 block phải chồng theo trục x ít nhất 30% (theo box hẹp hơn).
-        line_gap_ratio: y-gap tối đa giữa 2 dòng cùng paragraph, tính bằng `line_height`.
-        height_diff_ratio: chênh chiều cao tối đa cho phép — tránh gộp tiêu đề khác cỡ chữ.
+        reading_order: "ltr" | "rtl" | "auto".
+        x_overlap_threshold: 2 block phải chồng theo trục x ít nhất 30%.
+        line_gap_ratio: y-gap tối đa giữa 2 dòng cùng paragraph, × line_height.
+        image_gray: optional grayscale ndarray cho boldness detection. Nếu None,
+            split chỉ dựa height jump (kém chính xác hơn).
 
-    Returns:
-        List paragraph đã sort theo reading order. Block không match nào → 1 paragraph riêng.
+    Pass 1: gom cluster theo gap + x_overlap (loose, no height check).
+    Pass 2: trong mỗi cluster, split theo style break (height + boldness jump).
+
+    Returns: List paragraph sort theo reading order.
     """
     n = len(blocks)
     if n == 0:
@@ -166,39 +268,37 @@ def merge_blocks_into_paragraphs(
             extents, [b.text for b in blocks],
         )
 
-    # Build cluster bằng union-find. O(n^2) — n thường <= 200 nên không lo.
+    # Pass 1: cluster bằng union-find theo gap + x_overlap (no height filter).
     uf = _UnionFind(n)
     for i in range(n):
         xi_min, yi_min, xi_max, yi_max = extents[i]
-        hi = max(1, yi_max - yi_min)
         for j in range(i + 1, n):
             xj_min, yj_min, xj_max, yj_max = extents[j]
-            hj = max(1, yj_max - yj_min)
 
-            # Chênh chiều cao quá lớn → khả năng khác cỡ chữ / khác vai trò
-            ratio = abs(hi - hj) / max(hi, hj)
-            if ratio > height_diff_ratio:
-                continue
-
-            # Phải chồng đáng kể theo trục x
             x_overlap = _overlap_ratio(xi_min, xi_max, xj_min, xj_max)
             if x_overlap < x_overlap_threshold:
                 continue
 
-            # Y-gap (block trên trước, block dưới sau)
             top_block_bottom = min(yi_max, yj_max)
             bottom_block_top = max(yi_min, yj_min)
             y_gap = bottom_block_top - top_block_bottom
-            # y_gap < 0 nghĩa là 2 box overlap dọc → vẫn coi là cùng paragraph
             if y_gap > line_height * line_gap_ratio:
                 continue
 
             uf.union(i, j)
 
-    # Gom indices theo cluster root
-    clusters: dict[int, list[int]] = {}
+    # Pass 2: split clusters theo style break (height + boldness jump)
+    raw_clusters: dict[int, list[int]] = {}
     for i in range(n):
-        clusters.setdefault(uf.find(i), []).append(i)
+        raw_clusters.setdefault(uf.find(i), []).append(i)
+
+    clusters: dict[int, list[int]] = {}
+    next_id = 0
+    for cluster_indices in raw_clusters.values():
+        sub_clusters = _split_cluster_by_style(cluster_indices, blocks, image_gray)
+        for sub in sub_clusters:
+            clusters[next_id] = sub
+            next_id += 1
 
     paragraphs: list[OcrParagraph] = []
     direction = -1 if reading_order == "rtl" else 1

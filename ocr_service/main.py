@@ -26,6 +26,7 @@ from engine import (
 )
 from paragraph_merger import (
     detect_reading_order,
+    is_meaningless_text,
     merge_blocks_into_paragraphs,
     paragraphs_to_full_text,
 )
@@ -445,7 +446,7 @@ def _build_lines_from_engine(blocks: list) -> list[dict]:
 
 
 def _build_blocks_payload(
-    blocks: list, reading_order: str,
+    blocks: list, reading_order: str, image_bytes: bytes | None = None,
 ) -> tuple[list[dict], str, str]:
     """Gộp lines thành block theo paragraph_merger + reading order.
 
@@ -455,7 +456,21 @@ def _build_blocks_payload(
         resolved = detect_reading_order(blocks)
     else:
         resolved = reading_order
-    paragraphs = merge_blocks_into_paragraphs(blocks, reading_order=resolved)
+
+    # Decode grayscale 1 lần cho boldness detection (paragraph style split)
+    image_gray = None
+    if image_bytes is not None:
+        try:
+            import cv2  # type: ignore[import-not-found]
+            import numpy as np
+            arr = np.frombuffer(image_bytes, np.uint8)
+            image_gray = cv2.imdecode(arr, cv2.IMREAD_GRAYSCALE)
+        except Exception as exc:  # noqa: BLE001
+            log.warning("decode_for_boldness_failed error=%s", exc)
+
+    paragraphs = merge_blocks_into_paragraphs(
+        blocks, reading_order=resolved, image_gray=image_gray,
+    )
 
     # Pre-build lines payload to attach vào block
     line_lookup = _build_lines_from_engine(blocks)
@@ -597,7 +612,19 @@ async def _run_ocr(
 
     elapsed_ms = int((time.perf_counter() - started) * 1000)
 
-    blocks_payload, resolved_order, full_text = _build_blocks_payload(blocks, reading_order)
+    # Filter blocks có text vô nghĩa (vd `$\a$` từ icon misread, `\A`, toàn symbol).
+    # Conservative — chỉ bắt backslash + pure-symbol ≥2 chars, giữ `?`/`!` đơn lẻ.
+    pre_n = len(blocks)
+    blocks = [b for b in blocks if not is_meaningless_text(b.text)]
+    if len(blocks) < pre_n:
+        log.info(
+            "filter_meaningless request_id=%s dropped=%d kept=%d",
+            request_id, pre_n - len(blocks), len(blocks),
+        )
+
+    blocks_payload, resolved_order, full_text = _build_blocks_payload(
+        blocks, reading_order, image_bytes=image_bytes,
+    )
 
     log.info(
         "ocr_ok request_id=%s lang=%s detected=%s n_lines=%d n_blocks=%d "
