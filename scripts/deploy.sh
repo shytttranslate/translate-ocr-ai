@@ -64,8 +64,11 @@ apt-get install -y -qq --no-install-recommends \
     python3.12 python3.12-venv python3.12-dev \
     build-essential curl ca-certificates \
     libgl1 libglib2.0-0 libgomp1 \
-    git jq
+    git jq \
+    tesseract-ocr tesseract-ocr-osd
 timer_end "apt-get"
+# Tesseract OSD dùng cho OCR auto-detect (script identification trên ảnh).
+# `tesseract-ocr-osd` cung cấp `osd.traineddata` (~10MB).
 
 if ! command -v uv >/dev/null 2>&1; then
     echo "    Cài uv (modern pip thay thế)..."

@@ -83,25 +83,52 @@ SUPPORTED_LANGS = frozenset(
 )
 
 AUTO_DEFAULT_CONF_THRESHOLD = 0.85
-# Default model PP-OCRv5_mobile_rec cover SẴN: ch + chinese_cht + en + japan trong 1 model.
-# Dùng "ch" làm pass 1 → 1 lần OCR cover được ~80% case (Á + Anh). Trước đây dùng "en"
-# (model en_PP-OCRv5_mobile_rec) chỉ cover ASCII → ảnh CJK luôn fail pass 1, ảnh Việt mất dấu.
+# Default fallback model — dùng khi OSD low-conf hoặc script không nằm trong PaddleOCR coverage.
+# PP-OCRv5_mobile_rec cover ch + chinese_cht + en + japan trong 1 model.
 AUTO_DEFAULT_LANG = "ch"
 
-# Map Unicode script (detect được từ text pass 1) → lang code phù hợp cho pass 2.
-# Pass 2 chỉ cần CHỈ chạy 1 lang đúng → tiết kiệm 2/3 compute so với gather 3 lang cứng.
+# === Tesseract OSD-based auto-detect ===
+# Threshold script_conf: theo Google paper "reasonably confident" ≥ 1.5, "very confident" ≥ 2.5.
+# OSD chạy trên FULL image (post-resize) chứ không crop — Tesseract OSD work tốt nhất ở
+# page-level vì cần đủ char để decide script. Crop từng bbox thường thiếu char → "Too few".
+TESSERACT_OSD_CONF_THRESHOLD = float(os.environ.get("OSD_CONF_THRESHOLD", "1.5"))
+
+# Map Tesseract OSD script → PaddleOCR PP-OCRv5 lang code.
+# OSD label: xem `osd.traineddata` (Google Research). Một số script Tesseract trả không có
+# trong PaddleOCR (Hebrew, Bengali, Tibetan, Mongolian, ...) → fallback về default `ch`.
+OSD_SCRIPT_TO_PADDLE_LANG: dict[str, str] = {
+    "Latin": "vi",                # latin_PP-OCRv5_mobile_rec cover 47 lang Latin extended
+    "Cyrillic": "ru",             # eslav_PP-OCRv5_mobile_rec
+    "Han": "ch",                  # PP-OCRv5_mobile_rec cover ch + chinese_cht + en + japan
+    "HanS": "ch",
+    "HanT": "chinese_cht",
+    "HanS_vert": "ch",
+    "HanT_vert": "chinese_cht",
+    "Japanese": "ch",             # ch model cover japan native
+    "Japanese_vert": "ch",
+    "Korean": "korean",           # korean_PP-OCRv5_mobile_rec
+    "Korean_vert": "korean",
+    "Arabic": "ar",               # arabic_PP-OCRv5_mobile_rec
+    "Devanagari": "hi",           # devanagari_PP-OCRv5_mobile_rec
+    "Thai": "th",
+    "Greek": "el",
+    "Tamil": "ta",
+    # Telugu OSD chưa có training data riêng — Tesseract OSD label dùng "Latin" cho Telugu là chuyện thường.
+    # → User truyền lang=te explicit nếu cần. Auto sẽ map về vi (latin) — sai cho Telugu nhưng rare.
+}
+
+# === Legacy Unicode script → lang (giữ lại làm sanity-check post-recognition) ===
 SCRIPT_TO_LANG: dict[str, str] = {
-    "latin_ext": "vi",       # latin_PP-OCRv5_mobile_rec cover Việt + 46 lang Latin
-    "cyrillic": "ru",        # eslav_PP-OCRv5_mobile_rec
-    "korean": "korean",      # korean_PP-OCRv5_mobile_rec
-    "arabic": "ar",          # arabic_PP-OCRv5_mobile_rec
-    "devanagari": "hi",      # devanagari_PP-OCRv5_mobile_rec
+    "latin_ext": "vi",
+    "cyrillic": "ru",
+    "korean": "korean",
+    "arabic": "ar",
+    "devanagari": "hi",
     "thai": "th",
     "greek": "el",
     "tamil": "ta",
     "telugu": "te",
 }
-# Script mà default model "ch" đã handle native — không cần fallback.
 DEFAULT_NATIVE_SCRIPTS = frozenset({"ascii", "cjk", "japanese_kana"})
 
 POOL_SIZE = int(os.environ.get("PADDLEOCR_POOL_SIZE", "8"))
@@ -193,6 +220,56 @@ class OcrLine:
     words: list[OcrWord] | None = None  # chỉ có khi level="word"
 
 
+class ScriptDetector:
+    """Wrap Tesseract OSD (Orientation & Script Detection).
+
+    OSD trả về (script_name, script_conf). Conf >= 1.5 được Google paper coi là
+    "reasonably confident", >= 2.5 là "very confident". Nếu Tesseract không
+    install hoặc OSD lỗi, `detect()` trả None — caller phải fallback.
+
+    Note: chạy trên page-level (full image post-resize) cho accuracy tốt nhất —
+    crop từng bbox thường thiếu char → Tesseract báo "Too few characters".
+    """
+
+    def __init__(self) -> None:
+        self._available = False
+        self._pytesseract = None
+        try:
+            import pytesseract  # type: ignore[import-not-found]
+            v = pytesseract.get_tesseract_version()
+            self._pytesseract = pytesseract
+            self._available = True
+            log.info("script_detector_init tesseract=%s", v)
+        except Exception as exc:  # noqa: BLE001
+            log.warning("script_detector_unavailable error=%s", exc)
+
+    @property
+    def available(self) -> bool:
+        return self._available
+
+    def detect(self, image_bgr: np.ndarray) -> tuple[str | None, float]:
+        """Run OSD on a BGR image. Return (script, confidence).
+
+        Returns (None, 0.0) khi tesseract không install hoặc OSD lỗi (vd
+        "Too few characters" trên ảnh không có text).
+        """
+        if not self._available or self._pytesseract is None:
+            return None, 0.0
+        try:
+            from PIL import Image as _PILImage
+            rgb = image_bgr[:, :, ::-1]
+            img = _PILImage.fromarray(rgb)
+            res = self._pytesseract.image_to_osd(
+                img, output_type=self._pytesseract.Output.DICT,
+            )
+            script = res.get("script")
+            conf = float(res.get("script_conf", 0.0))
+            return script, conf
+        except Exception as exc:  # noqa: BLE001
+            log.debug("osd_detect_failed error=%s", exc)
+            return None, 0.0
+
+
 class _LangEnginePool:
     def __init__(self, lang: str, size: int) -> None:
         self.lang = lang
@@ -227,9 +304,12 @@ class OcrEngine:
         self._pools_lock = threading.Lock()
         self._api_version: str | None = None
         self._device = self._resolve_device()
+        # Tesseract OSD wrapper — graceful degrade nếu không có tesseract.
+        self._script_detector = ScriptDetector()
         log.info(
-            "engine_init pool_size=%d device=%s mobile=%s cuda=%s",
+            "engine_init pool_size=%d device=%s mobile=%s cuda=%s osd=%s",
             POOL_SIZE, self._device, USE_MOBILE_MODEL, _HAS_GPU,
+            self._script_detector.available,
         )
 
     @staticmethod
@@ -420,80 +500,62 @@ class OcrEngine:
     async def ocr_auto(
         self, image_bytes: bytes, return_word_box: bool = False,
     ) -> tuple[list[OcrLine], int, int, str]:
-        """Auto-detect lang — 2-pass smart fallback.
+        """Auto-detect lang via Tesseract OSD on full (resized) image.
 
-        Pass 1: chạy default model "ch" (cover ch+chinese_cht+en+japan).
-        Pass 2: nếu text pass 1 chứa script ngoài CJK/Latin-ASCII → chỉ chạy 1 lang
-                fallback đúng (latin/cyrillic/korean/arabic/...) thay vì gather 3 lang.
+        Pipeline:
+            1. Decode + resize ảnh (re-use logic chung với recognition path).
+            2. Tesseract OSD trên ảnh đã resize → (script, conf).
+            3. Map script → PaddleOCR lang nếu conf đạt threshold.
+            4. Recognition full với lang đã chọn.
 
-        Lưu ý: heuristic CV pre-detect (Option A) đã thử nhưng KHÔNG ĐÁNG TIN — Latin
-        (Việt/Pháp) và CJK có feature pixel chồng nhau, font thin bị tách stroke. Bỏ.
-        Nếu tương lai cần tăng tốc, cần CNN classifier (~5MB MobileNet finetune) thay vì
-        pure heuristic.
+        Fallback ladder:
+            - Tesseract unavailable / OSD throw error → default `ch`.
+            - script_conf < 1.5 → default `ch`.
+            - Script không có trong PaddleOCR coverage (Hebrew, Bengali, ...) → default `ch`.
+            - Recognition lang chọn lỗi → retry với `ch`.
         """
-        default_blocks, width, height = await self.ocr(image_bytes, AUTO_DEFAULT_LANG, return_word_box)
-        default_avg = (
-            sum(b.confidence for b in default_blocks) / len(default_blocks)
-            if default_blocks else 0.0
-        )
-        full_text = "".join(b.text for b in default_blocks)
-        scripts_seen = _detect_scripts(full_text)
-        unsupported = scripts_seen - DEFAULT_NATIVE_SCRIPTS
+        # Decode + resize 1 lần (reuse cho cả OSD và recognition pass dưới).
+        bgr, width, height, _scale = await asyncio.to_thread(self._decode_image, image_bytes)  # type: ignore[misc]
 
-        # Shortcut 1: pass 1 confident + chỉ chứa script default cover → return ngay
-        if default_blocks and default_avg >= AUTO_DEFAULT_CONF_THRESHOLD and not unsupported:
-            log.info(
-                "auto_pass1_win lang=%s conf=%.3f n=%d scripts=%s",
-                AUTO_DEFAULT_LANG, default_avg, len(default_blocks), scripts_seen,
+        chosen_lang = AUTO_DEFAULT_LANG
+        chosen_script: str | None = None
+        osd_conf = 0.0
+        if self._script_detector.available:
+            chosen_script, osd_conf = await asyncio.to_thread(
+                self._script_detector.detect, bgr,
             )
-            return default_blocks, width, height, AUTO_DEFAULT_LANG
+            log.info("auto_osd script=%s conf=%.2f", chosen_script, osd_conf)
+            if chosen_script and osd_conf >= TESSERACT_OSD_CONF_THRESHOLD:
+                mapped = OSD_SCRIPT_TO_PADDLE_LANG.get(chosen_script)
+                if mapped is not None:
+                    chosen_lang = mapped
+                else:
+                    log.info(
+                        "auto_script_unsupported script=%s → fallback %s",
+                        chosen_script, AUTO_DEFAULT_LANG,
+                    )
+            else:
+                log.info(
+                    "auto_osd_low_conf conf=%.2f<%.2f → fallback %s",
+                    osd_conf, TESSERACT_OSD_CONF_THRESHOLD, AUTO_DEFAULT_LANG,
+                )
+        else:
+            log.info("auto_osd_unavailable → fallback %s", AUTO_DEFAULT_LANG)
 
-        # Shortcut 2: pass 1 không detect được gì (ảnh không có text) → return rỗng
-        if not default_blocks:
-            log.info("auto_pass1_empty — không phát hiện text")
-            return default_blocks, width, height, AUTO_DEFAULT_LANG
-
-        # Chọn fallback dựa script lớn nhất ngoài CJK/ASCII
-        fallback_lang = _choose_fallback_lang(scripts_seen)
-        if fallback_lang is None:
-            # Pass 1 conf thấp nhưng không detect script lạ — có thể nhiễu, return luôn
-            log.info(
-                "auto_pass1_low_conf_no_fb conf=%.3f n=%d scripts=%s",
-                default_avg, len(default_blocks), scripts_seen,
-            )
-            return default_blocks, width, height, AUTO_DEFAULT_LANG
-
-        log.info(
-            "auto_pass2_targeted lang=%s scripts=%s pass1_conf=%.3f",
-            fallback_lang, scripts_seen, default_avg,
-        )
         try:
-            fb_blocks, _, _ = await self.ocr(image_bytes, fallback_lang, return_word_box)
+            blocks, _, _ = await self.ocr(image_bytes, chosen_lang, return_word_box)
         except Exception as exc:  # noqa: BLE001
-            log.warning("auto_fallback_failed lang=%s error=%s", fallback_lang, exc)
-            return default_blocks, width, height, AUTO_DEFAULT_LANG
-
-        fb_avg = (
-            sum(b.confidence for b in fb_blocks) / len(fb_blocks) if fb_blocks else 0.0
-        )
-
-        # So sánh score = avg_conf × log1p(n) — log1p ưu tiên kết quả nhiều block hợp lệ
-        import math
-        default_score = default_avg * math.log1p(len(default_blocks))
-        fb_score = fb_avg * math.log1p(len(fb_blocks))
-
-        if fb_score > default_score:
-            log.info(
-                "auto_pass2_win lang=%s conf=%.3f n=%d (vs default conf=%.3f n=%d)",
-                fallback_lang, fb_avg, len(fb_blocks), default_avg, len(default_blocks),
+            log.warning(
+                "auto_recognition_failed lang=%s error=%s → retry ch",
+                chosen_lang, exc,
             )
-            return fb_blocks, width, height, fallback_lang
+            if chosen_lang != AUTO_DEFAULT_LANG:
+                blocks, _, _ = await self.ocr(image_bytes, AUTO_DEFAULT_LANG, return_word_box)
+                chosen_lang = AUTO_DEFAULT_LANG
+            else:
+                raise
 
-        log.info(
-            "auto_pass2_keep_default conf=%.3f n=%d (fb_lang=%s lost: conf=%.3f n=%d)",
-            default_avg, len(default_blocks), fallback_lang, fb_avg, len(fb_blocks),
-        )
-        return default_blocks, width, height, AUTO_DEFAULT_LANG
+        return blocks, width, height, chosen_lang
 
     async def warm_up(self, langs: list[str]) -> None:
         for lang in langs:
