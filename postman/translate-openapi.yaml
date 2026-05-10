@@ -358,7 +358,9 @@ paths:
         hashes, ISO dates, code/ID patterns. Disable with `skip_non_text=false` to translate everything.
 
 
-        **Limits:** max 2000 translatable strings per request, max nesting depth 50.'
+        **Limits:** max 20 000 translatable strings per request, max nesting depth 200. Wall-clock time scales linearly with
+        translatable strings — at ~78 strings/sec (vLLM continuous batching), 4000 strings ≈ 50s, 20 000 strings ≈ 4-5 min.
+        Make sure your HTTP client timeout is set high enough.'
       operationId: translateJsonObject
       requestBody:
         required: true
@@ -746,8 +748,8 @@ components:
         html:
           type: string
           minLength: 1
-          maxLength: 5000000
-          description: HTML to translate (max 5 000 000 chars).
+          maxLength: 20000000
+          description: HTML to translate (max 20 000 000 chars ~ 20 MB).
           example: <p>Hello <b>world</b>!</p>
         source_lang:
           type: string

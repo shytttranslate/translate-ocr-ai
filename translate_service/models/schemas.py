@@ -119,8 +119,8 @@ class JsonTranslateResponse(BaseModel):
     )
 
 
-# Pattern check ISO 639-1/2 hoặc "auto" (cho HTML request)
-_HTML_MAX_BYTES = 5_000_000  # 5MB
+# HTML max chars — 20MB đủ cho mọi trang web/document thực tế
+_HTML_MAX_BYTES = 20_000_000  # 20MB
 
 
 class TranslateHtmlRequest(BaseModel):
@@ -131,7 +131,7 @@ class TranslateHtmlRequest(BaseModel):
     html: str = Field(
         min_length=1,
         max_length=_HTML_MAX_BYTES,
-        description="HTML cần dịch (max 5MB hoặc 5M ký tự).",
+        description="HTML cần dịch (max 20MB ~ 20M ký tự).",
     )
     source_lang: str = Field(
         default="auto",

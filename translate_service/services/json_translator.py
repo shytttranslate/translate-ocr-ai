@@ -230,9 +230,9 @@ def parse_excluded_paths(value: Any) -> list[tuple[str, ...]]:
 # Main entry
 # ----------------------------------------------------------------------------
 
-# Limits
-MAX_JSON_STRINGS = 2000  # số string max trong 1 JSON
-MAX_JSON_DEPTH = 50  # nesting depth tối đa
+# Limits — đủ cho document/catalog lớn. vLLM continuous batching scale tốt.
+MAX_JSON_STRINGS = 20000  # số string max trong 1 JSON
+MAX_JSON_DEPTH = 200  # nesting depth tối đa
 
 
 class JsonTooLarge(Exception):
