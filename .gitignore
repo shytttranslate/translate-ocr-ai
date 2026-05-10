@@ -10,3 +10,7 @@ venv/
 *.log
 data/glossaries/*.json
 !data/glossaries/.gitkeep
+
+# Runtime OCR regression logs (snapshot timestamp + baseline) — tạo qua
+# scripts/test_ocr_samples.py. Baseline pin manually trên server, không track git.
+logs/
