@@ -134,7 +134,18 @@ def detect_reading_order(blocks: list[OcrLine]) -> ReadingOrder:
 def _detect_reading_order_from_extents(
     extents: list[tuple[int, int, int, int]], texts: list[str],
 ) -> ReadingOrder:
-    """RTL nếu ảnh portrait (H/W >= 1.2) VÀ >= 30% block có CJK. Còn lại LTR."""
+    """Quyết định reading order page-level.
+
+    RTL khi:
+      - Hebrew/Arabic/Persian: tỷ lệ ký tự RTL >= 30% (đặc trưng rõ, không lẫn).
+      - CJK manga vertical: ảnh portrait (H/W >= 1.2) VÀ tỷ lệ char CJK/kana >= 0.5
+        (50% — strict để tránh false positive khi ảnh Latin có vài char CJK rác do
+        OCR lỗi đọc).
+    Còn lại LTR.
+
+    Đếm theo CHARACTER thay vì block — robust hơn khi 1 block có 1 char CJK rác
+    nhưng cả block là Latin.
+    """
     if not extents:
         return "ltr"
     page_xmin = min(e[0] for e in extents)
@@ -144,8 +155,27 @@ def _detect_reading_order_from_extents(
     width = max(1, page_xmax - page_xmin)
     height = max(1, page_ymax - page_ymin)
     portrait = (height / width) >= 1.2
-    cjk_ratio = sum(1 for t in texts if _has_cjk(t)) / max(1, len(texts))
-    if portrait and cjk_ratio >= 0.3:
+
+    cjk_chars = 0
+    rtl_chars = 0
+    other_alpha = 0
+    for t in texts:
+        for c in t:
+            cp = ord(c)
+            if (0x4E00 <= cp <= 0x9FFF) or (0x3400 <= cp <= 0x4DBF) \
+                    or (0x3040 <= cp <= 0x30FF) or (0xAC00 <= cp <= 0xD7AF):
+                cjk_chars += 1
+            elif (0x0590 <= cp <= 0x05FF) or (0x0600 <= cp <= 0x06FF) \
+                    or (0x0750 <= cp <= 0x077F):
+                rtl_chars += 1
+            elif c.isalpha():
+                other_alpha += 1
+    total = cjk_chars + rtl_chars + other_alpha
+    if total == 0:
+        return "ltr"
+    if rtl_chars / total >= 0.30:
+        return "rtl"
+    if portrait and cjk_chars / total >= 0.50:
         return "rtl"
     return "ltr"
 
@@ -316,13 +346,17 @@ def merge_blocks_into_paragraphs(
     paragraphs: list[OcrParagraph] = []
     direction = -1 if reading_order == "rtl" else 1
 
+    # Bin y_center theo band ~0.7 × line_height — block cùng 1 dòng (y_center
+    # chênh < 0.7 lh do PaddleOCR pad bbox khác nhau) gom cùng band → sort thứ
+    # cấp theo x. Tránh case sort primary theo raw y → đảo ngược thứ tự dòng.
+    intra_band = max(1.0, line_height * 0.7)
+
     for indices in clusters.values():
-        # Sort indices trong cluster theo (y_center, x_center * direction).
-        # Trong 1 paragraph reading order vẫn là top→bottom. RTL chỉ ảnh hưởng
-        # khi 2 line cùng y (vertical text manga column → đọc phải sang trái).
+        # Sort theo (band(y_center), x_center * direction). Trong cùng band x đi
+        # theo direction (LTR: trái→phải; RTL: phải→trái).
         indices.sort(
             key=lambda idx: (
-                (extents[idx][1] + extents[idx][3]) / 2,
+                int(((extents[idx][1] + extents[idx][3]) / 2) / intra_band),
                 ((extents[idx][0] + extents[idx][2]) / 2) * direction,
             )
         )
