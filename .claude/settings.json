@@ -42,7 +42,10 @@
       "Bash(/usr/bin/grep -n \"level\\\\|Detection level\\\\|levelBlock\\\\|levelWord\\\\|Block.*Word\" /home/thinh/AI_server/tools/ocr_preview/index.html)",
       "Bash(curl -sS -m 30 -X POST -H 'Content-Type: application/json' -d '{\"image_url\":\"https://upload.wikimedia.org/wikipedia/commons/thumb/8/87/PDF_file_icon.svg/240px-PDF_file_icon.svg.png\",\"mode\":\"general\"}' https://ocr.spacecloud.fit/v1/ocr -o /tmp/resp_general.json -w 'general: HTTP %{http_code} %{time_total}s\\\\n')",
       "Bash(curl -sS -m 60 -X POST -H 'Content-Type: application/json' -d '{\"image_url\":\"https://upload.wikimedia.org/wikipedia/commons/thumb/8/87/PDF_file_icon.svg/240px-PDF_file_icon.svg.png\",\"mode\":\"manga\"}' https://ocr.spacecloud.fit/v1/ocr -o /tmp/resp_manga.json -w 'manga:   HTTP %{http_code} %{time_total}s\\\\n')",
-      "Bash(python3 -c \"import ast; ast.parse\\(open\\('ocr_service/manga_pipeline.py'\\).read\\(\\)\\); print\\('OK'\\)\")"
+      "Bash(python3 -c \"import ast; ast.parse\\(open\\('ocr_service/manga_pipeline.py'\\).read\\(\\)\\); print\\('OK'\\)\")",
+      "Bash(python3 -c \"import yaml; print\\('yaml ok', yaml.__version__\\)\")",
+      "Bash(python3 -c \"import openapi_spec_validator; print\\('validator ok'\\)\")",
+      "Bash(python3 tools/gen_openapi.py)"
     ],
     "additionalDirectories": [
       "/tmp"
