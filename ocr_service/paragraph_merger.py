@@ -226,7 +226,9 @@ def merge_blocks_into_paragraphs(
     blocks: list[OcrLine],
     reading_order: ReadingOrder = "auto",
     x_overlap_threshold: float = 0.3,
+    y_overlap_threshold: float = 0.3,
     line_gap_ratio: float = 0.8,
+    inline_gap_ratio: float = 1.5,
     image_gray=None,
 ) -> list[OcrParagraph]:
     """Gộp các OCR block thành paragraph qua 2-pass clustering.
@@ -234,12 +236,17 @@ def merge_blocks_into_paragraphs(
     Args:
         blocks: list block gốc từ PaddleOCR.
         reading_order: "ltr" | "rtl" | "auto".
-        x_overlap_threshold: 2 block phải chồng theo trục x ít nhất 30%.
-        line_gap_ratio: y-gap tối đa giữa 2 dòng cùng paragraph, × line_height.
+        x_overlap_threshold: vertical merge — 2 block cùng cột phải chồng x ≥ 30%.
+        y_overlap_threshold: horizontal merge — 2 block cùng dòng phải chồng y ≥ 30%.
+        line_gap_ratio: y-gap tối đa giữa 2 dòng cùng paragraph (× line_height).
+        inline_gap_ratio: x-gap tối đa giữa 2 đoạn cùng dòng (× line_height) —
+            handle trường hợp PaddleOCR tách "SO   GIVE YOUR   TIME" thành 3 box.
         image_gray: optional grayscale ndarray cho boldness detection. Nếu None,
             split chỉ dựa height jump (kém chính xác hơn).
 
-    Pass 1: gom cluster theo gap + x_overlap (loose, no height check).
+    Pass 1: gom cluster qua union-find. 2 cách merge:
+        - Vertical (cùng cột): x_overlap ≥ threshold + y_gap ≤ line_gap_ratio.
+        - Horizontal (cùng dòng): y_overlap ≥ threshold + x_gap ≤ inline_gap_ratio.
     Pass 2: trong mỗi cluster, split theo style break (height + boldness jump).
 
     Returns: List paragraph sort theo reading order.
@@ -268,24 +275,30 @@ def merge_blocks_into_paragraphs(
             extents, [b.text for b in blocks],
         )
 
-    # Pass 1: cluster bằng union-find theo gap + x_overlap (no height filter).
+    # Pass 1: cluster bằng union-find. 2 hướng merge (vertical OR horizontal).
     uf = _UnionFind(n)
     for i in range(n):
         xi_min, yi_min, xi_max, yi_max = extents[i]
         for j in range(i + 1, n):
             xj_min, yj_min, xj_max, yj_max = extents[j]
 
+            # Vertical merge: 2 block cùng cột (x_overlap đủ), gap y nhỏ → cùng paragraph.
             x_overlap = _overlap_ratio(xi_min, xi_max, xj_min, xj_max)
-            if x_overlap < x_overlap_threshold:
-                continue
+            if x_overlap >= x_overlap_threshold:
+                y_gap = max(yi_min, yj_min) - min(yi_max, yj_max)
+                if y_gap <= line_height * line_gap_ratio:
+                    uf.union(i, j)
+                    continue
 
-            top_block_bottom = min(yi_max, yj_max)
-            bottom_block_top = max(yi_min, yj_min)
-            y_gap = bottom_block_top - top_block_bottom
-            if y_gap > line_height * line_gap_ratio:
-                continue
-
-            uf.union(i, j)
+            # Horizontal merge: 2 block cùng dòng (y_overlap đủ), gap x nhỏ → cùng line.
+            # Handle case PaddleOCR tách "SO   GIVE YOUR   TIME" thành 3 box do gap word
+            # lớn (handwritten / spaced text) — các box không x-overlap nhau nhưng cùng
+            # 1 dòng đọc.
+            y_overlap = _overlap_ratio(yi_min, yi_max, yj_min, yj_max)
+            if y_overlap >= y_overlap_threshold:
+                x_gap = max(xi_min, xj_min) - min(xi_max, xj_max)
+                if x_gap <= line_height * inline_gap_ratio:
+                    uf.union(i, j)
 
     # Pass 2: split clusters theo style break (height + boldness jump)
     raw_clusters: dict[int, list[int]] = {}
