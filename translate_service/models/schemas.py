@@ -119,6 +119,94 @@ class JsonTranslateResponse(BaseModel):
     )
 
 
+# Pattern check ISO 639-1/2 hoặc "auto" (cho HTML request)
+_HTML_MAX_BYTES = 5_000_000  # 5MB
+
+
+class TranslateHtmlRequest(BaseModel):
+    """Translate HTML preserving structure. Skip script/style/code, walk DOM,
+    XLIFF-style placeholder cho inline tags."""
+    model_config = ConfigDict(extra="forbid")
+
+    html: str = Field(
+        min_length=1,
+        max_length=_HTML_MAX_BYTES,
+        description="HTML cần dịch (max 5MB hoặc 5M ký tự).",
+    )
+    source_lang: str = Field(
+        default="auto",
+        pattern=LANG_PATTERN,
+        description="auto = model tự detect.",
+    )
+    target_lang: str = Field(
+        min_length=2,
+        max_length=8,
+        pattern=LANG_PATTERN,
+        description="Ngôn ngữ đích (bắt buộc).",
+    )
+    translate_attributes: bool = Field(
+        default=True,
+        description="Dịch alt/title/aria-label/placeholder + meta description. False = chỉ text nodes.",
+    )
+    ignore_terms: list[str] = Field(
+        default_factory=list,
+        max_length=500,
+        description=(
+            "Danh sách từ/cụm từ KHÔNG dịch (giữ nguyên). "
+            "Match theo word boundary, mặc định case-sensitive. "
+            "Vd: ['Apple', 'MacBook Pro', 'iPhone 15 Pro Max']."
+        ),
+    )
+    ignore_case: bool = Field(
+        default=False,
+        description="Case-insensitive match cho ignore_terms (default false: 'Apple' ≠ 'apple').",
+    )
+
+    @model_validator(mode="after")
+    def _check(self) -> TranslateHtmlRequest:
+        if self.target_lang == "auto":
+            raise ValueError("target_lang không được là 'auto'")
+        if not self.html.strip():
+            raise ValueError("html không được rỗng")
+        for t in self.ignore_terms:
+            if not t or not t.strip():
+                raise ValueError("ignore_terms không được chứa string rỗng")
+            if len(t) > 200:
+                raise ValueError(f"ignore_terms[*] vượt 200 ký tự: {t[:30]!r}...")
+        return self
+
+
+class HtmlHealthInfo(BaseModel):
+    """Metric độ "sạch" của HTML input — cho client biết HTML có cần fix không."""
+    health: Literal["clean", "minor", "moderate"] = Field(
+        description="severe sẽ raise 422, không xuất hiện ở response 200.",
+    )
+    error_rate: float = Field(description="Tỷ lệ error trên tổng tag (đã weighted fatal × 5).")
+    structure_diff: float = Field(description="|raw_open_tags − parsed_tags| / raw_open_tags.")
+    errors_total: int
+    fatals_total: int
+    parse_tier: Literal["lxml", "html5lib", "fragment_wrap"] = Field(
+        description="Parser đã dùng. fragment_wrap = input không có <html>, đã wrap tự động.",
+    )
+
+
+class TranslateHtmlResponse(BaseModel):
+    request_id: str
+    processing_time_ms: int
+    html: str = Field(description="HTML đã dịch, structure preserved.")
+    detected_source_lang: str | None = Field(
+        default=None,
+        description="Lang dominant của batch khi source_lang=auto. None nếu explicit lang.",
+    )
+    health: HtmlHealthInfo
+    segments_translated: int = Field(description="Số segment đã dịch (text nodes + attributes).")
+    chars_translated: int = Field(description="Tổng ký tự đã đẩy vào model.")
+    warnings: list[str] = Field(
+        default_factory=list,
+        description="Cảnh báo: parser auto-fix, placeholder mất, post-translate diff, ...",
+    )
+
+
 def _camel(s: str) -> str:
     """snake_case → camelCase cho JSON alias."""
     parts = s.split("_")

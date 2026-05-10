@@ -2,7 +2,7 @@
   "info": {
     "name": "Translate & OCR & TTS API",
     "_postman_id": "translate-ocr-tts-2026",
-    "description": "AI server — Translate + Dictionary + OCR + TTS.\n\n**Endpoints:**\n- `{{translate_url}}/v1/translate` — dịch single/batch\n- `{{translate_url}}/v1/json` — dịch i18n array\n- `{{translate_url}}/v1/dict` — tra từ điển đa ngôn ngữ\n- `{{ocr_url}}/v1/ocr` — OCR JSON (image_url hoặc base64)\n- `{{ocr_url}}/v1/ocr/upload` — OCR multipart upload\n- `{{ocr_url}}/v1/languages` — list lang codes\n- `{{tts_url}}/v1/tts` — synthesize speech (Chatterbox 0.5B, 23 lang, KHÔNG có VI)\n- `{{tts_url}}/v1/voices` — list preset voices\n- `{{tts_url}}/v1/languages` — list 23 supported languages\n\nSet biến `translate_url`, `ocr_url`, `tts_url` ở Variables tab.",
+    "description": "AI server — Translate + Dictionary + OCR + TTS.\n\n**Endpoints:**\n- `{{translate_url}}/v1/translate` — dịch single/batch\n- `{{translate_url}}/v1/json` — dịch i18n array\n- `{{translate_url}}/v1/translate-html` — dịch HTML preserve structure + ignore_terms\n- `{{translate_url}}/v1/dict` — tra từ điển đa ngôn ngữ\n- `{{ocr_url}}/v1/ocr` — OCR JSON (image_url hoặc base64)\n- `{{ocr_url}}/v1/ocr/upload` — OCR multipart upload\n- `{{ocr_url}}/v1/languages` — list lang codes\n- `{{tts_url}}/v1/tts` — synthesize speech (Chatterbox 0.5B, 23 lang, KHÔNG có VI)\n- `{{tts_url}}/v1/voices` — list preset voices\n- `{{tts_url}}/v1/languages` — list 23 supported languages\n\nSet biến `translate_url`, `ocr_url`, `tts_url` ở Variables tab.",
     "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
   },
   "variable": [
@@ -147,6 +147,166 @@
             "body": {
               "mode": "raw",
               "raw": "{\n  \"texts\": [\n    \"Welcome\",\n    \"Sign in\",\n    \"Sign up\"\n  ],\n  \"source_lang\": \"en\",\n  \"target_lang\": \"ja\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "Translate HTML (inline tags)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{translate_url}}/v1/translate-html",
+              "host": [
+                "{{translate_url}}"
+              ],
+              "path": [
+                "v1",
+                "translate-html"
+              ]
+            },
+            "description": "DOM walk + XLIFF placeholder cho inline tags. <b>/<i>/<a>... preserved.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"html\": \"<p>Hello <b>red</b> car!</p>\",\n  \"target_lang\": \"vi\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "Translate HTML — ignore_terms (brands)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{translate_url}}/v1/translate-html",
+              "host": [
+                "{{translate_url}}"
+              ],
+              "path": [
+                "v1",
+                "translate-html"
+              ]
+            },
+            "description": "Brand names giữ nguyên — word boundary match, default case-sensitive.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"html\": \"<p>Apple makes the new MacBook Pro and iPhone. Buy now!</p>\",\n  \"source_lang\": \"en\",\n  \"target_lang\": \"vi\",\n  \"ignore_terms\": [\n    \"Apple\",\n    \"MacBook Pro\",\n    \"iPhone\"\n  ]\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "Translate HTML — alt + title attributes",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{translate_url}}/v1/translate-html",
+              "host": [
+                "{{translate_url}}"
+              ],
+              "path": [
+                "v1",
+                "translate-html"
+              ]
+            },
+            "description": "alt/title/aria-label/placeholder dịch; src/href/class/id giữ nguyên.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"html\": \"<img src=\\\"x.jpg\\\" alt=\\\"A picture of a cat\\\" title=\\\"Click to enlarge\\\"><p>Image gallery</p>\",\n  \"source_lang\": \"en\",\n  \"target_lang\": \"vi\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "Translate HTML — script + code skipped",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{translate_url}}/v1/translate-html",
+              "host": [
+                "{{translate_url}}"
+              ],
+              "path": [
+                "v1",
+                "translate-html"
+              ]
+            },
+            "description": "<script>/<style>/<code>/<pre>/... skip toàn subtree.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"html\": \"<p>Use <code>print()</code> to debug.</p><script>console.log(\\\"skip\\\")</script>\",\n  \"source_lang\": \"en\",\n  \"target_lang\": \"vi\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "Translate HTML — severely broken (expect 422)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{translate_url}}/v1/translate-html",
+              "host": [
+                "{{translate_url}}"
+              ],
+              "path": [
+                "v1",
+                "translate-html"
+              ]
+            },
+            "description": "Mismatched tags vượt threshold → 422 với errors detail + suggestion.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"html\": \"<b><i>x</b></i><b><i>y</b></i><b><i>z</b></i><b><i>a</b></i><b><i>b</b></i>\",\n  \"target_lang\": \"vi\"\n}",
               "options": {
                 "raw": {
                   "language": "json"

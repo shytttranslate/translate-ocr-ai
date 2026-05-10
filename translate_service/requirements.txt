@@ -13,3 +13,5 @@ json-repair==0.30.2
 structlog==24.4.0
 orjson==3.10.11
 pytesseract==0.3.13
+lxml==5.3.0
+html5lib==1.1

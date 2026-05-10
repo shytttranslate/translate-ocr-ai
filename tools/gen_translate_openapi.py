@@ -6,10 +6,11 @@ Output:
     postman/translate-openapi.yaml   (RapidAPI prefer YAML)
     postman/translate-openapi.json   (backup format)
 
-Spec cover 3 endpoints chính:
-- POST /v1/translate — single hoặc batch text, response shape khác nhau theo source_lang
-- POST /v1/json     — i18n batch array, cùng shape với /v1/translate
-- POST /v1/dict     — tra từ điển đa ngôn ngữ (rich camelCase output)
+Spec cover các endpoints chính:
+- POST /v1/translate      — single hoặc batch text, response shape khác nhau theo source_lang
+- POST /v1/json           — i18n batch array, cùng shape với /v1/translate
+- POST /v1/translate-html — translate HTML preserve structure + ignore_terms
+- POST /v1/dict           — tra từ điển đa ngôn ngữ (rich camelCase output)
 
 Plus health + models info.
 
@@ -160,6 +161,176 @@ def build_schemas() -> dict:
             "request_id": {"type": "string", "format": "uuid"},
             "processing_time_ms": {"type": "integer", "minimum": 0},
             "translations": _translations_field,
+        },
+    }
+
+    # --- Translate HTML ----------------------------------------------------
+    schemas["TranslateHtmlRequest"] = {
+        "type": "object",
+        "required": ["html", "target_lang"],
+        "properties": {
+            "html": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 5000000,
+                "description": "HTML to translate (max 5 000 000 chars).",
+                "example": "<p>Hello <b>world</b>!</p>",
+            },
+            "source_lang": {
+                "type": "string",
+                "default": "auto",
+                "pattern": "^(auto|[a-z]{2,3}(-[A-Z]{2})?)$",
+                "example": "en",
+            },
+            "target_lang": {
+                "type": "string",
+                "minLength": 2,
+                "maxLength": 8,
+                "pattern": "^[a-z]{2,3}(-[A-Z]{2})?$",
+                "example": "vi",
+            },
+            "translate_attributes": {
+                "type": "boolean",
+                "default": True,
+                "description": (
+                    "Translate `alt`, `title`, `aria-label`, `placeholder` attributes "
+                    "and `<meta name=\"description\">` content. Set false for text-only translation."
+                ),
+            },
+            "ignore_terms": {
+                "type": "array",
+                "items": {"type": "string", "minLength": 1, "maxLength": 200},
+                "maxItems": 500,
+                "default": [],
+                "description": (
+                    "Words or multi-word phrases to keep verbatim (brand names, product names, "
+                    "technical jargon). Word-boundary match. Default case-sensitive."
+                ),
+                "example": ["Apple", "MacBook Pro", "iPhone 15 Pro Max"],
+            },
+            "ignore_case": {
+                "type": "boolean",
+                "default": False,
+                "description": "Case-insensitive match for `ignore_terms`. Default false (`Apple` ≠ `apple`).",
+            },
+        },
+    }
+
+    schemas["HtmlHealth"] = {
+        "type": "object",
+        "required": ["health", "error_rate", "structure_diff", "errors_total", "fatals_total", "parse_tier"],
+        "properties": {
+            "health": {
+                "type": "string",
+                "enum": ["clean", "minor", "moderate"],
+                "description": "Health classification of the input HTML. `severe` triggers 422 (not in 200 response).",
+            },
+            "error_rate": {
+                "type": "number",
+                "format": "float",
+                "minimum": 0.0,
+                "description": "Weighted parser-error rate per tag (fatal × 5).",
+            },
+            "structure_diff": {
+                "type": "number",
+                "format": "float",
+                "minimum": 0.0,
+                "description": "|raw_open_tags − parsed_tags| / raw_open_tags.",
+            },
+            "errors_total": {"type": "integer", "minimum": 0},
+            "fatals_total": {"type": "integer", "minimum": 0},
+            "parse_tier": {
+                "type": "string",
+                "enum": ["lxml", "html5lib", "fragment_wrap"],
+                "description": (
+                    "Parser used: `lxml` (fast path), `html5lib` (browser-grade fallback), "
+                    "or `fragment_wrap` (auto-wrapped fragment without `<html>`)."
+                ),
+            },
+        },
+    }
+
+    schemas["TranslateHtmlResponse"] = {
+        "type": "object",
+        "required": [
+            "request_id",
+            "processing_time_ms",
+            "html",
+            "health",
+            "segments_translated",
+            "chars_translated",
+            "warnings",
+        ],
+        "properties": {
+            "request_id": {"type": "string", "format": "uuid"},
+            "processing_time_ms": {"type": "integer", "minimum": 0},
+            "html": {
+                "type": "string",
+                "description": "Translated HTML, structure preserved.",
+            },
+            "detected_source_lang": {
+                "type": "string",
+                "nullable": True,
+                "description": "Dominant detected language when `source_lang=auto`. Null for explicit lang.",
+                "example": "en",
+            },
+            "health": {"$ref": "#/components/schemas/HtmlHealth"},
+            "segments_translated": {
+                "type": "integer",
+                "minimum": 0,
+                "description": "Number of text/attribute segments translated.",
+            },
+            "chars_translated": {
+                "type": "integer",
+                "minimum": 0,
+                "description": "Total characters sent to the model.",
+            },
+            "warnings": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": (
+                    "Soft warnings: parser auto-fixes, lost ignore-term placeholders, "
+                    "post-translate tag count drift."
+                ),
+            },
+        },
+    }
+
+    schemas["HtmlTooMalformedError"] = {
+        "type": "object",
+        "required": ["detail"],
+        "properties": {
+            "detail": {
+                "type": "object",
+                "required": ["error", "health", "metrics"],
+                "properties": {
+                    "error": {"type": "string", "enum": ["html_too_malformed"]},
+                    "health": {"type": "string", "enum": ["severe"]},
+                    "metrics": {
+                        "type": "object",
+                        "properties": {
+                            "error_rate": {"type": "number"},
+                            "structure_diff": {"type": "number"},
+                            "errors_total": {"type": "integer"},
+                            "fatals_total": {"type": "integer"},
+                        },
+                    },
+                    "errors_sample": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "line": {"type": "integer"},
+                                "column": {"type": "integer"},
+                                "severity": {"type": "string"},
+                                "message": {"type": "string"},
+                            },
+                        },
+                    },
+                    "fatal_markers": {"type": "array", "items": {"type": "string"}},
+                    "suggestion": {"type": "string"},
+                },
+            },
         },
     }
 
@@ -477,6 +648,84 @@ JSON_RESP_EXAMPLES = {
     },
 }
 
+HTML_REQ_EXAMPLES = {
+    "simple_inline": {
+        "summary": "Simple HTML with inline tags",
+        "value": {
+            "html": "<p>Hello <b>red</b> car!</p>",
+            "target_lang": "vi",
+        },
+    },
+    "ignore_terms_brand": {
+        "summary": "Brand names preserved via ignore_terms",
+        "value": {
+            "html": "<p>Apple makes the new MacBook Pro and iPhone. Buy now!</p>",
+            "source_lang": "en",
+            "target_lang": "vi",
+            "ignore_terms": ["Apple", "MacBook Pro", "iPhone"],
+        },
+    },
+    "attributes": {
+        "summary": "Translate alt + title attributes",
+        "value": {
+            "html": '<img src="x.jpg" alt="A picture of a cat" title="Click to enlarge"><p>Image gallery</p>',
+            "source_lang": "en",
+            "target_lang": "vi",
+        },
+    },
+    "skip_script_code": {
+        "summary": "Skip script/style/code blocks",
+        "value": {
+            "html": '<p>Use <code>print()</code> to debug.</p><script>console.log("skip")</script>',
+            "source_lang": "en",
+            "target_lang": "vi",
+        },
+    },
+}
+
+HTML_RESP_EXAMPLES = {
+    "simple_inline": {
+        "summary": "Inline tag preserved",
+        "value": {
+            "request_id": "e3a1109d-4dda-4c4e-a207-8e7a4efe7d85",
+            "processing_time_ms": 192,
+            "html": "<p>Chào xe <b>đỏ</b>!</p>",
+            "detected_source_lang": "en",
+            "health": {
+                "health": "clean",
+                "error_rate": 0.0,
+                "structure_diff": 0.0,
+                "errors_total": 0,
+                "fatals_total": 0,
+                "parse_tier": "fragment_wrap",
+            },
+            "segments_translated": 1,
+            "chars_translated": 28,
+            "warnings": [],
+        },
+    },
+    "ignore_terms": {
+        "summary": "Brand names kept",
+        "value": {
+            "request_id": "e01239ca-ac36-4cea-a9f7-628b046f3e2b",
+            "processing_time_ms": 113,
+            "html": "<p>Apple tạo ra MacBook Pro mới và iPhone. Mua ngay!</p>",
+            "detected_source_lang": "en",
+            "health": {
+                "health": "clean",
+                "error_rate": 0.0,
+                "structure_diff": 0.0,
+                "errors_total": 0,
+                "fatals_total": 0,
+                "parse_tier": "fragment_wrap",
+            },
+            "segments_translated": 1,
+            "chars_translated": 56,
+            "warnings": [],
+        },
+    },
+}
+
 DICT_REQ_EXAMPLES = {
     "vi_learning_en": {
         "summary": "VI speaker learning EN — 'book'",
@@ -624,6 +873,76 @@ def build_paths() -> dict:
         },
     }
 
+    paths["/v1/translate-html"] = {
+        "post": {
+            "tags": ["translate"],
+            "summary": "Translate HTML preserving structure.",
+            "description": (
+                "Translate HTML while preserving tags, attributes, structure and inline "
+                "formatting. Pipeline:\n"
+                "1. Parse with `lxml` (recover mode) → fallback to `html5lib` if errors are heavy.\n"
+                "2. Score health: `clean` / `minor` / `moderate` / `severe`. "
+                "`severe` returns **422** asking the caller to fix the HTML first.\n"
+                "3. Walk DOM. Skip `<script>`, `<style>`, `<noscript>`, `<svg>`, `<math>`, "
+                "`<template>`, `<textarea>`, `<pre>`, `<code>`, `<kbd>`, `<samp>`, `<var>`.\n"
+                "4. Build inline-aware segments at leaf-block level using XLIFF-style "
+                "`<g id=N>...</g>` placeholders so inline `<b>`, `<i>`, `<a>`, etc. survive "
+                "any reordering by the model.\n"
+                "5. `ignore_terms` — replace exact word-boundary matches with "
+                "`<x-keep id=N/>` placeholders; restored verbatim after translation.\n"
+                "6. Batch translate via vLLM continuous batching (concurrency=16).\n"
+                "7. Re-insert into DOM, serialize, re-parse and verify tag count.\n\n"
+                "**Translatable attributes** (when `translate_attributes=true`): `alt`, `title`, "
+                "`aria-label`, `placeholder`, `<meta name=description|keywords>` content."
+            ),
+            "operationId": "translateHtml",
+            "requestBody": {
+                "required": True,
+                "content": {
+                    "application/json": {
+                        "schema": {"$ref": "#/components/schemas/TranslateHtmlRequest"},
+                        "examples": HTML_REQ_EXAMPLES,
+                    },
+                },
+            },
+            "responses": {
+                "200": {
+                    "description": "Translated HTML (clean/minor/moderate health).",
+                    "content": {
+                        "application/json": {
+                            "schema": {"$ref": "#/components/schemas/TranslateHtmlResponse"},
+                            "examples": HTML_RESP_EXAMPLES,
+                        },
+                    },
+                },
+                "422": {
+                    "description": (
+                        "HTML too malformed (`severe` health). Caller must fix HTML before retry. "
+                        "Either standard validation error or `html_too_malformed` payload."
+                    ),
+                    "content": {
+                        "application/json": {
+                            "schema": {
+                                "oneOf": [
+                                    {"$ref": "#/components/schemas/HtmlTooMalformedError"},
+                                    {"$ref": "#/components/schemas/ErrorResponse"},
+                                ],
+                            },
+                        },
+                    },
+                },
+                "502": {
+                    "description": "Upstream LLM error.",
+                    "content": {
+                        "application/json": {
+                            "schema": {"$ref": "#/components/schemas/ErrorResponse"},
+                        },
+                    },
+                },
+            },
+        },
+    }
+
     paths["/v1/dict"] = {
         "post": {
             "tags": ["dictionary"],
@@ -747,6 +1066,9 @@ def build_spec() -> dict:
         "## Highlights\n"
         "- `POST /v1/translate` — single string or batch (up to 100 items, each up to 50 000 chars).\n"
         "- `POST /v1/json` — i18n array of strings, order-preserving.\n"
+        "- `POST /v1/translate-html` — translate HTML preserving tag structure, with "
+        "inline-aware placeholders and a brand-name `ignore_terms` whitelist. "
+        "Auto-fixes minor parse issues; rejects severely malformed HTML with **422**.\n"
         "- `POST /v1/dict` — rich dictionary entry for language learners (phonetic, "
         "definitions, examples, phrases, synonyms/antonyms, mnemonic tips).\n"
         "- Auto language detection with per-item `detected_source_lang` when "

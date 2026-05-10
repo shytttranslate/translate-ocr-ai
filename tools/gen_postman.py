@@ -96,6 +96,52 @@ TRANSLATE = [
         {"texts": ["Welcome", "Sign in", "Sign up"], "source_lang": "en", "target_lang": "ja"},
         "Dịch mảng string giữ nguyên thứ tự — phù hợp cho i18n keys.",
     ),
+    req_json(
+        "Translate HTML (inline tags)",
+        "{{translate_url}}/v1/translate-html",
+        {"html": "<p>Hello <b>red</b> car!</p>", "target_lang": "vi"},
+        "DOM walk + XLIFF placeholder cho inline tags. <b>/<i>/<a>... preserved.",
+    ),
+    req_json(
+        "Translate HTML — ignore_terms (brands)",
+        "{{translate_url}}/v1/translate-html",
+        {
+            "html": "<p>Apple makes the new MacBook Pro and iPhone. Buy now!</p>",
+            "source_lang": "en",
+            "target_lang": "vi",
+            "ignore_terms": ["Apple", "MacBook Pro", "iPhone"],
+        },
+        "Brand names giữ nguyên — word boundary match, default case-sensitive.",
+    ),
+    req_json(
+        "Translate HTML — alt + title attributes",
+        "{{translate_url}}/v1/translate-html",
+        {
+            "html": '<img src="x.jpg" alt="A picture of a cat" title="Click to enlarge"><p>Image gallery</p>',
+            "source_lang": "en",
+            "target_lang": "vi",
+        },
+        "alt/title/aria-label/placeholder dịch; src/href/class/id giữ nguyên.",
+    ),
+    req_json(
+        "Translate HTML — script + code skipped",
+        "{{translate_url}}/v1/translate-html",
+        {
+            "html": '<p>Use <code>print()</code> to debug.</p><script>console.log("skip")</script>',
+            "source_lang": "en",
+            "target_lang": "vi",
+        },
+        "<script>/<style>/<code>/<pre>/... skip toàn subtree.",
+    ),
+    req_json(
+        "Translate HTML — severely broken (expect 422)",
+        "{{translate_url}}/v1/translate-html",
+        {
+            "html": "<b><i>x</b></i><b><i>y</b></i><b><i>z</b></i><b><i>a</b></i><b><i>b</b></i>",
+            "target_lang": "vi",
+        },
+        "Mismatched tags vượt threshold → 422 với errors detail + suggestion.",
+    ),
 ]
 
 
@@ -520,6 +566,7 @@ COLLECTION = {
             "**Endpoints:**\n"
             "- `{{translate_url}}/v1/translate` — dịch single/batch\n"
             "- `{{translate_url}}/v1/json` — dịch i18n array\n"
+            "- `{{translate_url}}/v1/translate-html` — dịch HTML preserve structure + ignore_terms\n"
             "- `{{translate_url}}/v1/dict` — tra từ điển đa ngôn ngữ\n"
             "- `{{ocr_url}}/v1/ocr` — OCR JSON (image_url hoặc base64)\n"
             "- `{{ocr_url}}/v1/ocr/upload` — OCR multipart upload\n"
