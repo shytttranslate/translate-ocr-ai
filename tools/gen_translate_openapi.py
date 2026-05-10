@@ -10,6 +10,7 @@ Spec cover các endpoints chính:
 - POST /v1/translate      — single hoặc batch text, response shape khác nhau theo source_lang
 - POST /v1/json           — i18n batch array, cùng shape với /v1/translate
 - POST /v1/translate-html — translate HTML preserve structure + ignore_terms
+- POST /v1/translate-json — translate JSON object recursively, 3 exclusion options
 - POST /v1/dict           — tra từ điển đa ngôn ngữ (rich camelCase output)
 
 Plus health + models info.
@@ -330,6 +331,124 @@ def build_schemas() -> dict:
                     "fatal_markers": {"type": "array", "items": {"type": "string"}},
                     "suggestion": {"type": "string"},
                 },
+            },
+        },
+    }
+
+    # --- Translate JSON object ---------------------------------------------
+    schemas["TranslateJsonObjectRequest"] = {
+        "type": "object",
+        "required": ["json_data", "target_lang"],
+        "properties": {
+            "json_data": {
+                "description": (
+                    "JSON to translate — object, array, or string. "
+                    "All string values are translated unless excluded."
+                ),
+                "oneOf": [
+                    {"type": "object"},
+                    {"type": "array"},
+                    {"type": "string"},
+                ],
+                "example": {
+                    "title": "Premium Wireless Earbuds",
+                    "product": {"name": "Earbuds Pro", "description": "Best quality"},
+                },
+            },
+            "source_lang": {
+                "type": "string",
+                "default": "auto",
+                "pattern": "^(auto|[a-z]{2,3}(-[A-Z]{2})?)$",
+            },
+            "target_lang": {
+                "type": "string",
+                "minLength": 2,
+                "maxLength": 8,
+                "pattern": "^[a-z]{2,3}(-[A-Z]{2})?$",
+            },
+            "words_not_to_translate": {
+                "description": (
+                    "Words/phrases to keep verbatim. Accepts a string with `;` separator "
+                    "or an array of strings. Word-boundary match, default case-sensitive."
+                ),
+                "oneOf": [
+                    {"type": "string"},
+                    {"type": "array", "items": {"type": "string"}},
+                ],
+                "example": "Earbuds; New York",
+            },
+            "paths_to_exclude": {
+                "description": (
+                    "Dot-notation JSON paths to skip. `*` matches any array index. "
+                    "Pattern matches the path AND its subtree. "
+                    "Accepts string with `;` or list."
+                ),
+                "oneOf": [
+                    {"type": "string"},
+                    {"type": "array", "items": {"type": "string"}},
+                ],
+                "example": "product.media.img_desc; items.*.image_url",
+            },
+            "common_keys_to_exclude": {
+                "description": (
+                    "Key names to skip at any nesting depth. "
+                    "Accepts string with `;` or list."
+                ),
+                "oneOf": [
+                    {"type": "string"},
+                    {"type": "array", "items": {"type": "string"}},
+                ],
+                "example": "name; price",
+            },
+            "ignore_case": {
+                "type": "boolean",
+                "default": False,
+                "description": "Case-insensitive match for `words_not_to_translate`.",
+            },
+            "skip_non_text": {
+                "type": "boolean",
+                "default": True,
+                "description": (
+                    "Auto-skip strings that aren't human text: numbers, currency, percent, "
+                    "URLs, emails, UUIDs, hashes, ISO dates, code/IDs."
+                ),
+            },
+        },
+    }
+
+    schemas["JsonTranslationStats"] = {
+        "type": "object",
+        "required": ["strings_translated", "strings_skipped", "chars_translated"],
+        "properties": {
+            "strings_translated": {"type": "integer", "minimum": 0},
+            "strings_skipped": {"type": "integer", "minimum": 0},
+            "chars_translated": {"type": "integer", "minimum": 0},
+        },
+    }
+
+    schemas["TranslateJsonObjectResponse"] = {
+        "type": "object",
+        "required": ["request_id", "processing_time_ms", "json_data", "stats", "warnings"],
+        "properties": {
+            "request_id": {"type": "string", "format": "uuid"},
+            "processing_time_ms": {"type": "integer", "minimum": 0},
+            "json_data": {
+                "description": "Translated JSON, structure preserved.",
+                "oneOf": [
+                    {"type": "object"},
+                    {"type": "array"},
+                    {"type": "string"},
+                ],
+            },
+            "detected_source_lang": {
+                "type": "string",
+                "nullable": True,
+                "example": "en",
+            },
+            "stats": {"$ref": "#/components/schemas/JsonTranslationStats"},
+            "warnings": {
+                "type": "array",
+                "items": {"type": "string"},
             },
         },
     }
@@ -726,6 +845,78 @@ HTML_RESP_EXAMPLES = {
     },
 }
 
+JSON_OBJ_REQ_EXAMPLES = {
+    "all_three_options": {
+        "summary": "All 3 exclusion options + nested JSON",
+        "value": {
+            "json_data": {
+                "title": "Premium Wireless Earbuds",
+                "price": 99.99,
+                "product": {
+                    "name": "Earbuds Pro",
+                    "description": "Best quality from New York",
+                    "media": {
+                        "img_desc": "Detailed product photo",
+                        "title": "Main image",
+                    },
+                },
+                "items": [
+                    {"name": "Item A", "image_url": "https://x.com/a.jpg", "desc": "Item A description"},
+                    {"name": "Item B", "image_url": "https://x.com/b.jpg", "desc": "Item B description"},
+                ],
+            },
+            "source_lang": "en",
+            "target_lang": "vi",
+            "words_not_to_translate": "Earbuds; New York",
+            "paths_to_exclude": "product.media.img_desc; items.*.image_url",
+            "common_keys_to_exclude": "name; price",
+        },
+    },
+    "list_format": {
+        "summary": "Options as list[str]",
+        "value": {
+            "json_data": {"title": "Apple makes Earbuds Pro"},
+            "target_lang": "vi",
+            "words_not_to_translate": ["Apple", "Earbuds"],
+        },
+    },
+    "skip_non_text_off": {
+        "summary": "Disable skip_non_text",
+        "value": {
+            "json_data": {"id": "PROD-123", "title": "Hello"},
+            "target_lang": "vi",
+            "skip_non_text": False,
+        },
+    },
+}
+
+JSON_OBJ_RESP_EXAMPLE = {
+    "summary": "Nested with all 3 exclusions applied",
+    "value": {
+        "request_id": "fa0e1d22-5a3c-4c7e-9f1d-2b1e8d7a4c33",
+        "processing_time_ms": 461,
+        "json_data": {
+            "title": "Không dây cao cấp Earbuds",
+            "price": 99.99,
+            "product": {
+                "name": "Earbuds Pro",
+                "description": "Chất lượng tốt nhất từ New York",
+                "media": {
+                    "img_desc": "Detailed product photo",
+                    "title": "Hình ảnh chính",
+                },
+            },
+            "items": [
+                {"name": "Item A", "image_url": "https://x.com/a.jpg", "desc": "Mô tả mục A"},
+                {"name": "Item B", "image_url": "https://x.com/b.jpg", "desc": "Mô tả mục B"},
+            ],
+        },
+        "detected_source_lang": "en",
+        "stats": {"strings_translated": 5, "strings_skipped": 0, "chars_translated": 99},
+        "warnings": [],
+    },
+}
+
 DICT_REQ_EXAMPLES = {
     "vi_learning_en": {
         "summary": "VI speaker learning EN — 'book'",
@@ -943,6 +1134,76 @@ def build_paths() -> dict:
         },
     }
 
+    paths["/v1/translate-json"] = {
+        "post": {
+            "tags": ["translate"],
+            "summary": "Translate JSON object/array recursively, preserve structure.",
+            "description": (
+                "Walks the JSON tree, translating every string value, and writes the "
+                "translated string back into the same position. Numbers, booleans and null "
+                "are untouched. Three exclusion options control what to skip:\n\n"
+                "**`words_not_to_translate`** — words/phrases to keep verbatim within "
+                "translated text (brand names, place names). Word-boundary match, default "
+                "case-sensitive. Accepts a `;`-separated string or a list.\n\n"
+                "**`paths_to_exclude`** — dot-notation JSON paths to skip entirely. `*` "
+                "matches any array index. A pattern matches the path *and its subtree* "
+                "(e.g. `product.media` skips everything under `product.media`). Examples: "
+                "`product.media.img_desc`, `items.*.image_url`.\n\n"
+                "**`common_keys_to_exclude`** — key names to skip at any nesting depth "
+                "(e.g. `name; price` skips every `.name` and `.price` field).\n\n"
+                "**Auto skip filter** (`skip_non_text=true`, default): pure numbers, "
+                "currency (`$99.99`), percent, URLs, emails, UUIDs, hashes, ISO dates, "
+                "code/ID patterns. Disable with `skip_non_text=false` to translate everything.\n\n"
+                "**Limits:** max 2000 translatable strings per request, max nesting depth 50."
+            ),
+            "operationId": "translateJsonObject",
+            "requestBody": {
+                "required": True,
+                "content": {
+                    "application/json": {
+                        "schema": {"$ref": "#/components/schemas/TranslateJsonObjectRequest"},
+                        "examples": JSON_OBJ_REQ_EXAMPLES,
+                    },
+                },
+            },
+            "responses": {
+                "200": {
+                    "description": "Translated JSON.",
+                    "content": {
+                        "application/json": {
+                            "schema": {"$ref": "#/components/schemas/TranslateJsonObjectResponse"},
+                            "examples": {"all_three_options": JSON_OBJ_RESP_EXAMPLE},
+                        },
+                    },
+                },
+                "413": {
+                    "description": "JSON exceeds size/depth limits (>2000 strings or >50 nesting depth).",
+                    "content": {
+                        "application/json": {
+                            "schema": {"$ref": "#/components/schemas/ErrorResponse"},
+                        },
+                    },
+                },
+                "422": {
+                    "description": "Validation error.",
+                    "content": {
+                        "application/json": {
+                            "schema": {"$ref": "#/components/schemas/ErrorResponse"},
+                        },
+                    },
+                },
+                "502": {
+                    "description": "Upstream LLM error.",
+                    "content": {
+                        "application/json": {
+                            "schema": {"$ref": "#/components/schemas/ErrorResponse"},
+                        },
+                    },
+                },
+            },
+        },
+    }
+
     paths["/v1/dict"] = {
         "post": {
             "tags": ["dictionary"],
@@ -1069,6 +1330,9 @@ def build_spec() -> dict:
         "- `POST /v1/translate-html` — translate HTML preserving tag structure, with "
         "inline-aware placeholders and a brand-name `ignore_terms` whitelist. "
         "Auto-fixes minor parse issues; rejects severely malformed HTML with **422**.\n"
+        "- `POST /v1/translate-json` — translate JSON object/array recursively. Three "
+        "exclusion options: `words_not_to_translate`, `paths_to_exclude` (dot-notation + "
+        "`*` wildcard), `common_keys_to_exclude` (any depth). Auto-skip non-text strings.\n"
         "- `POST /v1/dict` — rich dictionary entry for language learners (phonetic, "
         "definitions, examples, phrases, synonyms/antonyms, mnemonic tips).\n"
         "- Auto language detection with per-item `detected_source_lang` when "

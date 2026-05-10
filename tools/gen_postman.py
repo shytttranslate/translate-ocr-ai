@@ -142,6 +142,70 @@ TRANSLATE = [
         },
         "Mismatched tags vượt threshold → 422 với errors detail + suggestion.",
     ),
+    req_json(
+        "Translate JSON — all 3 exclude options (string format)",
+        "{{translate_url}}/v1/translate-json",
+        {
+            "json_data": {
+                "title": "Premium Wireless Earbuds",
+                "price": 99.99,
+                "product": {
+                    "name": "Earbuds Pro",
+                    "description": "Best quality from New York",
+                    "media": {
+                        "img_desc": "Detailed product photo",
+                        "title": "Main image",
+                    },
+                },
+                "items": [
+                    {"name": "Item A", "image_url": "https://x.com/a.jpg", "desc": "Item A description"},
+                    {"name": "Item B", "image_url": "https://x.com/b.jpg", "desc": "Item B description"},
+                ],
+            },
+            "source_lang": "en",
+            "target_lang": "vi",
+            "words_not_to_translate": "Earbuds; New York",
+            "paths_to_exclude": "product.media.img_desc; items.*.image_url",
+            "common_keys_to_exclude": "name; price",
+        },
+        "3 exclude options: words (giữ trong text), paths (skip subtree), common keys.",
+    ),
+    req_json(
+        "Translate JSON — list format options",
+        "{{translate_url}}/v1/translate-json",
+        {
+            "json_data": {"title": "Apple makes Earbuds Pro"},
+            "target_lang": "vi",
+            "words_not_to_translate": ["Apple", "Earbuds"],
+        },
+        "Options accept cả list[str] thay string với `;`.",
+    ),
+    req_json(
+        "Translate JSON — auto skip non-text",
+        "{{translate_url}}/v1/translate-json",
+        {
+            "json_data": {
+                "title": "Hello world",
+                "id": "PROD-123-X",
+                "url": "https://example.com",
+                "price_str": "$99.99",
+                "date": "2025-01-01",
+                "description": "Real text content",
+            },
+            "target_lang": "vi",
+        },
+        "Auto skip: ID/URL/currency/date. Default skip_non_text=true.",
+    ),
+    req_json(
+        "Translate JSON — array of strings (i18n alternative)",
+        "{{translate_url}}/v1/translate-json",
+        {
+            "json_data": ["Welcome", "Sign in", "Sign up"],
+            "source_lang": "en",
+            "target_lang": "ja",
+        },
+        "Array input cũng support — output theo thứ tự.",
+    ),
 ]
 
 
@@ -567,6 +631,7 @@ COLLECTION = {
             "- `{{translate_url}}/v1/translate` — dịch single/batch\n"
             "- `{{translate_url}}/v1/json` — dịch i18n array\n"
             "- `{{translate_url}}/v1/translate-html` — dịch HTML preserve structure + ignore_terms\n"
+            "- `{{translate_url}}/v1/translate-json` — dịch JSON object recursively + 3 exclude options\n"
             "- `{{translate_url}}/v1/dict` — tra từ điển đa ngôn ngữ\n"
             "- `{{ocr_url}}/v1/ocr` — OCR JSON (image_url hoặc base64)\n"
             "- `{{ocr_url}}/v1/ocr/upload` — OCR multipart upload\n"

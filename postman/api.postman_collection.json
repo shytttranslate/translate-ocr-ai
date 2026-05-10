@@ -2,7 +2,7 @@
   "info": {
     "name": "Translate & OCR & TTS API",
     "_postman_id": "translate-ocr-tts-2026",
-    "description": "AI server — Translate + Dictionary + OCR + TTS.\n\n**Endpoints:**\n- `{{translate_url}}/v1/translate` — dịch single/batch\n- `{{translate_url}}/v1/json` — dịch i18n array\n- `{{translate_url}}/v1/translate-html` — dịch HTML preserve structure + ignore_terms\n- `{{translate_url}}/v1/dict` — tra từ điển đa ngôn ngữ\n- `{{ocr_url}}/v1/ocr` — OCR JSON (image_url hoặc base64)\n- `{{ocr_url}}/v1/ocr/upload` — OCR multipart upload\n- `{{ocr_url}}/v1/languages` — list lang codes\n- `{{tts_url}}/v1/tts` — synthesize speech (Chatterbox 0.5B, 23 lang, KHÔNG có VI)\n- `{{tts_url}}/v1/voices` — list preset voices\n- `{{tts_url}}/v1/languages` — list 23 supported languages\n\nSet biến `translate_url`, `ocr_url`, `tts_url` ở Variables tab.",
+    "description": "AI server — Translate + Dictionary + OCR + TTS.\n\n**Endpoints:**\n- `{{translate_url}}/v1/translate` — dịch single/batch\n- `{{translate_url}}/v1/json` — dịch i18n array\n- `{{translate_url}}/v1/translate-html` — dịch HTML preserve structure + ignore_terms\n- `{{translate_url}}/v1/translate-json` — dịch JSON object recursively + 3 exclude options\n- `{{translate_url}}/v1/dict` — tra từ điển đa ngôn ngữ\n- `{{ocr_url}}/v1/ocr` — OCR JSON (image_url hoặc base64)\n- `{{ocr_url}}/v1/ocr/upload` — OCR multipart upload\n- `{{ocr_url}}/v1/languages` — list lang codes\n- `{{tts_url}}/v1/tts` — synthesize speech (Chatterbox 0.5B, 23 lang, KHÔNG có VI)\n- `{{tts_url}}/v1/voices` — list preset voices\n- `{{tts_url}}/v1/languages` — list 23 supported languages\n\nSet biến `translate_url`, `ocr_url`, `tts_url` ở Variables tab.",
     "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
   },
   "variable": [
@@ -307,6 +307,134 @@
             "body": {
               "mode": "raw",
               "raw": "{\n  \"html\": \"<b><i>x</b></i><b><i>y</b></i><b><i>z</b></i><b><i>a</b></i><b><i>b</b></i>\",\n  \"target_lang\": \"vi\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "Translate JSON — all 3 exclude options (string format)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{translate_url}}/v1/translate-json",
+              "host": [
+                "{{translate_url}}"
+              ],
+              "path": [
+                "v1",
+                "translate-json"
+              ]
+            },
+            "description": "3 exclude options: words (giữ trong text), paths (skip subtree), common keys.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"json_data\": {\n    \"title\": \"Premium Wireless Earbuds\",\n    \"price\": 99.99,\n    \"product\": {\n      \"name\": \"Earbuds Pro\",\n      \"description\": \"Best quality from New York\",\n      \"media\": {\n        \"img_desc\": \"Detailed product photo\",\n        \"title\": \"Main image\"\n      }\n    },\n    \"items\": [\n      {\n        \"name\": \"Item A\",\n        \"image_url\": \"https://x.com/a.jpg\",\n        \"desc\": \"Item A description\"\n      },\n      {\n        \"name\": \"Item B\",\n        \"image_url\": \"https://x.com/b.jpg\",\n        \"desc\": \"Item B description\"\n      }\n    ]\n  },\n  \"source_lang\": \"en\",\n  \"target_lang\": \"vi\",\n  \"words_not_to_translate\": \"Earbuds; New York\",\n  \"paths_to_exclude\": \"product.media.img_desc; items.*.image_url\",\n  \"common_keys_to_exclude\": \"name; price\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "Translate JSON — list format options",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{translate_url}}/v1/translate-json",
+              "host": [
+                "{{translate_url}}"
+              ],
+              "path": [
+                "v1",
+                "translate-json"
+              ]
+            },
+            "description": "Options accept cả list[str] thay string với `;`.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"json_data\": {\n    \"title\": \"Apple makes Earbuds Pro\"\n  },\n  \"target_lang\": \"vi\",\n  \"words_not_to_translate\": [\n    \"Apple\",\n    \"Earbuds\"\n  ]\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "Translate JSON — auto skip non-text",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{translate_url}}/v1/translate-json",
+              "host": [
+                "{{translate_url}}"
+              ],
+              "path": [
+                "v1",
+                "translate-json"
+              ]
+            },
+            "description": "Auto skip: ID/URL/currency/date. Default skip_non_text=true.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"json_data\": {\n    \"title\": \"Hello world\",\n    \"id\": \"PROD-123-X\",\n    \"url\": \"https://example.com\",\n    \"price_str\": \"$99.99\",\n    \"date\": \"2025-01-01\",\n    \"description\": \"Real text content\"\n  },\n  \"target_lang\": \"vi\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "Translate JSON — array of strings (i18n alternative)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{translate_url}}/v1/translate-json",
+              "host": [
+                "{{translate_url}}"
+              ],
+              "path": [
+                "v1",
+                "translate-json"
+              ]
+            },
+            "description": "Array input cũng support — output theo thứ tự.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"json_data\": [\n    \"Welcome\",\n    \"Sign in\",\n    \"Sign up\"\n  ],\n  \"source_lang\": \"en\",\n  \"target_lang\": \"ja\"\n}",
               "options": {
                 "raw": {
                   "language": "json"

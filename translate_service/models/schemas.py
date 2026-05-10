@@ -8,7 +8,7 @@ Scope đơn giản theo chỉ đạo anh Thịnh:
 """
 from __future__ import annotations
 
-from typing import Literal
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
@@ -188,6 +188,97 @@ class HtmlHealthInfo(BaseModel):
     parse_tier: Literal["lxml", "html5lib", "fragment_wrap"] = Field(
         description="Parser đã dùng. fragment_wrap = input không có <html>, đã wrap tự động.",
     )
+
+
+class TranslateJsonObjectRequest(BaseModel):
+    """Translate JSON object/array recursively. String values → translate,
+    structure preserved. 3 exclusion options: words, paths, common keys."""
+    model_config = ConfigDict(extra="forbid")
+
+    json_data: Any = Field(
+        description=(
+            "JSON cần dịch — object, array, hoặc string. Mọi string value sẽ được dịch trừ"
+            " khi match exclusion rules hoặc skip filter (numbers, URLs, emails, IDs...)."
+        ),
+    )
+    source_lang: str = Field(default="auto", pattern=LANG_PATTERN)
+    target_lang: str = Field(
+        min_length=2,
+        max_length=8,
+        pattern=LANG_PATTERN,
+    )
+
+    words_not_to_translate: str | list[str] = Field(
+        default_factory=list,
+        description=(
+            "Từ/cụm từ KHÔNG dịch (giữ nguyên trong text). Format: string với separator"
+            " `;` (vd `\"Earbuds; New York\"`) HOẶC list (vd `[\"Earbuds\", \"New York\"]`)."
+            " Word boundary, default case-sensitive."
+        ),
+        examples=["Earbuds; New York", ["Earbuds", "New York"]],
+    )
+    paths_to_exclude: str | list[str] = Field(
+        default_factory=list,
+        description=(
+            "JSON path không dịch (dot-notation, `*` = wildcard array index). "
+            "Format: string với separator `;` HOẶC list. Pattern khớp prefix subtree. "
+            "Vd: `product.media.img_desc` skip path đó + subtree; `items.*.url` skip mọi index."
+        ),
+        examples=["product.media.img_desc; items.*.image_url", ["product.media.img_desc"]],
+    )
+    common_keys_to_exclude: str | list[str] = Field(
+        default_factory=list,
+        description=(
+            "Tên key KHÔNG dịch ở BẤT KỲ depth nào trong JSON. "
+            "Format: string với separator `;` HOẶC list. "
+            "Vd: `name; price` → mọi `.name` và `.price` ở any nesting đều skip."
+        ),
+        examples=["name; price", ["name", "price"]],
+    )
+    ignore_case: bool = Field(
+        default=False,
+        description="Case-insensitive match cho words_not_to_translate.",
+    )
+    skip_non_text: bool = Field(
+        default=True,
+        description=(
+            "Skip strings không phải human text: số, $99.99, 50%, URL, email, UUID, hash,"
+            " ISO date, code/ID. Set false để dịch hết."
+        ),
+    )
+
+    @model_validator(mode="after")
+    def _check(self) -> TranslateJsonObjectRequest:
+        if self.target_lang == "auto":
+            raise ValueError("target_lang không được là 'auto'")
+        if self.json_data is None:
+            raise ValueError("json_data không được null")
+        # Validate type
+        if not isinstance(self.json_data, (dict, list, str)):
+            raise ValueError(
+                f"json_data phải là object, array hoặc string — nhận {type(self.json_data).__name__}"
+            )
+        return self
+
+
+class JsonTranslationStats(BaseModel):
+    strings_translated: int = Field(description="Số string value đã dịch.")
+    strings_skipped: int = Field(
+        description="Số string value bị skip (filter non-text + exclusion rules)."
+    )
+    chars_translated: int = Field(description="Tổng ký tự đã đẩy vào model.")
+
+
+class TranslateJsonObjectResponse(BaseModel):
+    request_id: str
+    processing_time_ms: int
+    json_data: Any = Field(description="JSON đã dịch, structure preserved.")
+    detected_source_lang: str | None = Field(
+        default=None,
+        description="Lang dominant khi source_lang=auto. None nếu explicit.",
+    )
+    stats: JsonTranslationStats
+    warnings: list[str] = Field(default_factory=list)
 
 
 class TranslateHtmlResponse(BaseModel):
