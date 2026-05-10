@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import time
-from collections import Counter
 
 from fastapi import APIRouter, HTTPException, Request, status
 
@@ -11,40 +10,54 @@ from models.schemas import (
     JsonTranslateResponse,
     TranslateRequest,
     TranslateResponse,
-    TranslationItem,
+    TranslationDetected,
 )
-from services.translator import translate_batch, translate_one
+from services.translator import TranslationResult, translate_batch, translate_one
 from utils.logging import get_logger
 
 router = APIRouter(tags=["translate"])
 log = get_logger(__name__)
 
 
+def _build_translations(
+    results: list[TranslationResult], source_lang: str
+) -> list[TranslationDetected] | list[str]:
+    """source_lang=auto → list object kèm detected_source_lang. Explicit → list[str]."""
+    if source_lang == "auto":
+        return [
+            TranslationDetected(
+                translated_text=r.translated_text,
+                detected_source_lang=r.detected_source_lang,
+            )
+            for r in results
+        ]
+    return [r.translated_text for r in results]
+
+
 @router.post("/v1/translate", response_model=TranslateResponse)
 async def translate(req: TranslateRequest, request: Request) -> TranslateResponse:
-    """Dịch text đơn hoặc batch (list of strings).
+    """Dịch text đơn hoặc batch.
 
-    - source_lang=auto: model tự detect, trả `detected_source_lang` trong response.
-    - source_lang=<code>: bypass detect, dịch trực tiếp.
+    Response `translations` theo thứ tự input:
+    - source_lang=auto → list[{translated_text, detected_source_lang}]
+    - explicit lang   → list[str]
     """
     request_id = request.state.request_id
-    registry = request.app.state.vllm_registry
-    endpoint = registry.translator
-    fingerprint = await endpoint.get_model_fingerprint()
+    endpoint = request.app.state.vllm_registry.translator
 
     started = time.perf_counter()
-
     texts = [req.text] if isinstance(req.text, str) else req.text
 
     try:
         if len(texts) == 1:
-            result = await translate_one(
-                endpoint=endpoint,
-                text=texts[0],
-                source_lang=req.source_lang,
-                target_lang=req.target_lang,
-            )
-            results = [result]
+            results = [
+                await translate_one(
+                    endpoint=endpoint,
+                    text=texts[0],
+                    source_lang=req.source_lang,
+                    target_lang=req.target_lang,
+                )
+            ]
         else:
             results = await translate_batch(
                 endpoint=endpoint,
@@ -77,16 +90,7 @@ async def translate(req: TranslateRequest, request: Request) -> TranslateRespons
     return TranslateResponse(
         request_id=request_id,
         processing_time_ms=elapsed_ms,
-        model_used=fingerprint,
-        translations=[
-            TranslationItem(
-                source_text=r.source_text,
-                translated_text=r.translated_text,
-                detected_source_lang=r.detected_source_lang,
-                target_lang=req.target_lang,
-            )
-            for r in results
-        ],
+        translations=_build_translations(results, req.source_lang),
     )
 
 
@@ -94,14 +98,14 @@ async def translate(req: TranslateRequest, request: Request) -> TranslateRespons
 async def translate_json(
     req: JsonTranslateRequest, request: Request
 ) -> JsonTranslateResponse:
-    """Dịch array of strings, trả lại array string cùng thứ tự.
+    """Dịch array of strings.
 
-    Dùng cho i18n batch hoặc khi client cần shape đơn giản nhất.
+    Response `translations` theo thứ tự input:
+    - source_lang=auto → list[{translated_text, detected_source_lang}]
+    - explicit lang   → list[str]
     """
     request_id = request.state.request_id
-    registry = request.app.state.vllm_registry
-    endpoint = registry.translator
-    fingerprint = await endpoint.get_model_fingerprint()
+    endpoint = request.app.state.vllm_registry.translator
 
     started = time.perf_counter()
 
@@ -125,29 +129,17 @@ async def translate_json(
         ) from exc
 
     elapsed_ms = int((time.perf_counter() - started) * 1000)
-
-    # Detected language dominant của batch (mode)
-    if req.source_lang == "auto":
-        counter = Counter(r.detected_source_lang for r in results)
-        detected = counter.most_common(1)[0][0] if counter else "unknown"
-    else:
-        detected = req.source_lang
-
     log.info(
         "translate_json_ok",
         request_id=request_id,
         batch_size=len(req.texts),
         source_lang=req.source_lang,
         target_lang=req.target_lang,
-        detected=detected,
         elapsed_ms=elapsed_ms,
     )
 
     return JsonTranslateResponse(
         request_id=request_id,
         processing_time_ms=elapsed_ms,
-        model_used=fingerprint,
-        translations=[r.translated_text for r in results],
-        detected_source_lang=detected,
-        target_lang=req.target_lang,
+        translations=_build_translations(results, req.source_lang),
     )

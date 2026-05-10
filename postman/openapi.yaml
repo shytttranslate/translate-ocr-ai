@@ -1,9 +1,9 @@
 openapi: 3.0.3
 info:
-  title: VBK OCR API
+  title: OCR API
   version: 0.3.0
-  description: '**VBK OCR API** — production-grade OCR powered by **PaddleOCR PP-OCRv5** and **manga-ocr** (kha-white) for
-    Japanese comics.
+  description: '**OCR API** — production-grade OCR powered by **PaddleOCR PP-OCRv5** and **manga-ocr** (kha-white) for Japanese
+    comics.
 
 
     ## Highlights
@@ -32,14 +32,14 @@ info:
     3. Read `full_text` for the concatenated result, or walk `blocks[].lines[].words[]` for layout.'
   termsOfService: https://ocr.spacecloud.fit/terms
   contact:
-    name: VBK OCR Support
+    name: OCR Support
     url: https://ocr.spacecloud.fit
     email: support@spacecloud.fit
   license:
     name: Proprietary
   x-logo:
     url: https://ocr.spacecloud.fit/logo.png
-    altText: VBK OCR API
+    altText: OCR API
 servers:
 - url: https://ocr.spacecloud.fit
   description: Production server — direct

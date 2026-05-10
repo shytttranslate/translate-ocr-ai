@@ -53,7 +53,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
 
 app = FastAPI(
-    title="VietByte Translate Service",
+    title="Translate Service",
     version="0.3.0",
     description="Translate (text + JSON batch) + Dictionary — vLLM Qwen3-14B-AWQ backend.",
     lifespan=lifespan,
@@ -118,7 +118,7 @@ async def list_models(request: Request) -> dict[str, Any]:
 @app.get("/", include_in_schema=False)
 async def root() -> dict[str, str]:
     return {
-        "service": "vietbyte-translate-service",
+        "service": "translate-service",
         "version": "0.3.0",
         "docs": "/docs",
         "endpoints": "/v1/translate, /v1/json, /v1/dict",

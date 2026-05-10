@@ -514,9 +514,9 @@ HEALTH = [
 COLLECTION = {
     "info": {
         "name": "Translate & OCR & TTS API",
-        "_postman_id": "vbk-translate-ocr-tts-2026",
+        "_postman_id": "translate-ocr-tts-2026",
         "description": (
-            "VBK AI server — Translate + Dictionary + OCR + TTS.\n\n"
+            "AI server — Translate + Dictionary + OCR + TTS.\n\n"
             "**Endpoints:**\n"
             "- `{{translate_url}}/v1/translate` — dịch single/batch\n"
             "- `{{translate_url}}/v1/json` — dịch i18n array\n"
@@ -532,7 +532,7 @@ COLLECTION = {
         "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json",
     },
     "variable": [
-        {"key": "translate_url", "value": "https://vocabupapi.spacecloud.fit", "type": "string"},
+        {"key": "translate_url", "value": "https://translate.spacecloud.fit", "type": "string"},
         {"key": "ocr_url", "value": "https://ocr.spacecloud.fit", "type": "string"},
         {"key": "tts_url", "value": "http://localhost:9004", "type": "string"},
     ],

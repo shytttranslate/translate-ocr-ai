@@ -1,4 +1,4 @@
-# VietByte AI API — Translation + Dictionary + OCR + TTS
+# AI API — Translation + Dictionary + OCR + TTS
 
 Service unified cho **Dịch thuật** (vLLM + `Qwen3-14B-AWQ`), **Từ điển song ngữ** (cùng model), **OCR** (PaddleOCR PP-OCRv5 + manga-ocr trên GPU), và **TTS** (Chatterbox Multilingual 0.5B trên GPU).
 

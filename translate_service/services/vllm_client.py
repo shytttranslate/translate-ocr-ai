@@ -19,10 +19,11 @@ class VllmEndpoint:
     served_model_name: str
     connect_timeout_s: float = 3.0
     request_timeout_s: float = 60.0
-    # Pool 100 connection per worker đủ cho 100 req/s (với 10 worker → 1000 connection total).
+    # Pool 200 connection per worker — với batch concurrency=16 và ~12 concurrent
+    # client cùng lúc (~192 in-flight call) vẫn còn buffer trước khi pool wait.
     # Mỗi worker process có pool riêng, HTTP/1.1 keepalive reuse connection giữa request.
-    pool_max_keepalive: int = 50
-    pool_max_connections: int = 100
+    pool_max_keepalive: int = 100
+    pool_max_connections: int = 200
 
     _client: httpx.AsyncClient | None = field(default=None, init=False, repr=False)
     _model_fingerprint: str | None = field(default=None, init=False, repr=False)

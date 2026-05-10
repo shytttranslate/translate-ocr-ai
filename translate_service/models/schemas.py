@@ -60,21 +60,21 @@ class TranslateRequest(BaseModel):
         return self
 
 
-class TranslationItem(BaseModel):
-    source_text: str
+class TranslationDetected(BaseModel):
+    """Item khi source_lang=auto: kèm detected_source_lang riêng cho mỗi text."""
     translated_text: str
-    detected_source_lang: str = Field(
-        description="Ngôn ngữ nguồn (model detect khi source_lang=auto, hoặc echo input)",
-    )
-    target_lang: str
+    detected_source_lang: str
 
 
 class TranslateResponse(BaseModel):
     request_id: str
-    service: Literal["translate"] = "translate"
     processing_time_ms: int
-    model_used: str
-    translations: list[TranslationItem]
+    translations: list[TranslationDetected] | list[str] = Field(
+        description=(
+            "Theo thứ tự input. source_lang=auto → list[{translated_text,"
+            " detected_source_lang}]. Explicit lang → list[str]."
+        ),
+    )
 
 
 class JsonTranslateRequest(BaseModel):
@@ -110,16 +110,13 @@ class JsonTranslateRequest(BaseModel):
 
 class JsonTranslateResponse(BaseModel):
     request_id: str
-    service: Literal["translate-json"] = "translate-json"
     processing_time_ms: int
-    model_used: str
-    translations: list[str] = Field(
-        description="Translation tương ứng từng phần tử input, cùng thứ tự",
+    translations: list[TranslationDetected] | list[str] = Field(
+        description=(
+            "Theo thứ tự input. source_lang=auto → list[{translated_text,"
+            " detected_source_lang}]. Explicit lang → list[str]."
+        ),
     )
-    detected_source_lang: str = Field(
-        description="Ngôn ngữ nguồn dominant của batch (lấy từ phần tử đầu)",
-    )
-    target_lang: str
 
 
 def _camel(s: str) -> str:
@@ -239,7 +236,6 @@ class DictResponse(BaseModel):
     model_config = _CAMEL_CFG
 
     request_id: str
-    service: Literal["dict"] = "dict"
     processing_time_ms: int
     model_used: str
 

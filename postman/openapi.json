@@ -1,12 +1,12 @@
 {
   "openapi": "3.0.3",
   "info": {
-    "title": "VBK OCR API",
+    "title": "OCR API",
     "version": "0.3.0",
-    "description": "**VBK OCR API** — production-grade OCR powered by **PaddleOCR PP-OCRv5** and **manga-ocr** (kha-white) for Japanese comics.\n\n## Highlights\n- 110 language codes across 12 script families (Latin, CJK, Cyrillic, Arabic, Devanagari, Thai, Greek, Tamil, Telugu, ...).\n- Two pipelines: `general` (PaddleOCR) and `manga` (PaddleOCR detection + manga-ocr recognition + speech-bubble clustering).\n- Always returns the full **ML Kit hierarchy**: blocks (paragraphs) > lines > words, each with confidence and 4-corner bbox.\n- Two ingest modes: JSON (base64 or URL) and multipart upload.\n- Auto language detection with parallel fallback when confidence drops below 0.85.\n- Auto reading-order detection (LTR / RTL) based on script family and page aspect.\n\n## Quick start\n1. Subscribe on RapidAPI to obtain your `X-RapidAPI-Key`.\n2. `POST /v1/ocr` with `{ \"image_url\": \"https://...\", \"lang\": \"auto\" }`.\n3. Read `full_text` for the concatenated result, or walk `blocks[].lines[].words[]` for layout.",
+    "description": "**OCR API** — production-grade OCR powered by **PaddleOCR PP-OCRv5** and **manga-ocr** (kha-white) for Japanese comics.\n\n## Highlights\n- 110 language codes across 12 script families (Latin, CJK, Cyrillic, Arabic, Devanagari, Thai, Greek, Tamil, Telugu, ...).\n- Two pipelines: `general` (PaddleOCR) and `manga` (PaddleOCR detection + manga-ocr recognition + speech-bubble clustering).\n- Always returns the full **ML Kit hierarchy**: blocks (paragraphs) > lines > words, each with confidence and 4-corner bbox.\n- Two ingest modes: JSON (base64 or URL) and multipart upload.\n- Auto language detection with parallel fallback when confidence drops below 0.85.\n- Auto reading-order detection (LTR / RTL) based on script family and page aspect.\n\n## Quick start\n1. Subscribe on RapidAPI to obtain your `X-RapidAPI-Key`.\n2. `POST /v1/ocr` with `{ \"image_url\": \"https://...\", \"lang\": \"auto\" }`.\n3. Read `full_text` for the concatenated result, or walk `blocks[].lines[].words[]` for layout.",
     "termsOfService": "https://ocr.spacecloud.fit/terms",
     "contact": {
-      "name": "VBK OCR Support",
+      "name": "OCR Support",
       "url": "https://ocr.spacecloud.fit",
       "email": "support@spacecloud.fit"
     },
@@ -15,7 +15,7 @@
     },
     "x-logo": {
       "url": "https://ocr.spacecloud.fit/logo.png",
-      "altText": "VBK OCR API"
+      "altText": "OCR API"
     }
   },
   "servers": [

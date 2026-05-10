@@ -85,7 +85,7 @@ fastapi       127.0.0.1:11111, 11112  (Vast Instance Portal)
 cloudflared   127.0.0.1:20241-20244
 ```
 
-→ **API của VietByte phải bind port khác 8080** (ví dụ 9000), hoặc kill Jupyter trước.
+→ **API phải bind port khác 8080** (ví dụ 9000), hoặc kill Jupyter trước.
 → Để Jupyter của anh không bị mất, em đề xuất **bind API port 9000**, public qua port forward riêng.
 
 ## Kế hoạch deploy điều chỉnh

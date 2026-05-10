@@ -56,7 +56,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
 
 app = FastAPI(
-    title="VietByte TTS Service",
+    title="TTS Service",
     version="0.1.0",
     description=(
         "Text-to-Speech với Chatterbox Multilingual 0.5B (ResembleAI, MIT). "
@@ -126,7 +126,7 @@ async def readiness(request: Request, response: Response) -> dict[str, Any]:
 @app.get("/", include_in_schema=False)
 async def root() -> dict[str, str]:
     return {
-        "service": "vietbyte-tts-service",
+        "service": "tts-service",
         "version": "0.1.0",
         "docs": "/docs",
         "preview": "/preview/" if _preview_dir.is_dir() else "(not mounted)",

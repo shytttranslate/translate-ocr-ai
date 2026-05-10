@@ -1,14 +1,14 @@
 {
   "info": {
     "name": "Translate & OCR & TTS API",
-    "_postman_id": "vbk-translate-ocr-tts-2026",
-    "description": "VBK AI server — Translate + Dictionary + OCR + TTS.\n\n**Endpoints:**\n- `{{translate_url}}/v1/translate` — dịch single/batch\n- `{{translate_url}}/v1/json` — dịch i18n array\n- `{{translate_url}}/v1/dict` — tra từ điển đa ngôn ngữ\n- `{{ocr_url}}/v1/ocr` — OCR JSON (image_url hoặc base64)\n- `{{ocr_url}}/v1/ocr/upload` — OCR multipart upload\n- `{{ocr_url}}/v1/languages` — list lang codes\n- `{{tts_url}}/v1/tts` — synthesize speech (Chatterbox 0.5B, 23 lang, KHÔNG có VI)\n- `{{tts_url}}/v1/voices` — list preset voices\n- `{{tts_url}}/v1/languages` — list 23 supported languages\n\nSet biến `translate_url`, `ocr_url`, `tts_url` ở Variables tab.",
+    "_postman_id": "translate-ocr-tts-2026",
+    "description": "AI server — Translate + Dictionary + OCR + TTS.\n\n**Endpoints:**\n- `{{translate_url}}/v1/translate` — dịch single/batch\n- `{{translate_url}}/v1/json` — dịch i18n array\n- `{{translate_url}}/v1/dict` — tra từ điển đa ngôn ngữ\n- `{{ocr_url}}/v1/ocr` — OCR JSON (image_url hoặc base64)\n- `{{ocr_url}}/v1/ocr/upload` — OCR multipart upload\n- `{{ocr_url}}/v1/languages` — list lang codes\n- `{{tts_url}}/v1/tts` — synthesize speech (Chatterbox 0.5B, 23 lang, KHÔNG có VI)\n- `{{tts_url}}/v1/voices` — list preset voices\n- `{{tts_url}}/v1/languages` — list 23 supported languages\n\nSet biến `translate_url`, `ocr_url`, `tts_url` ở Variables tab.",
     "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
   },
   "variable": [
     {
       "key": "translate_url",
-      "value": "https://vocabupapi.spacecloud.fit",
+      "value": "https://translate.spacecloud.fit",
       "type": "string"
     },
     {

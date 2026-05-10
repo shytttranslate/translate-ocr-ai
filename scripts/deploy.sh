@@ -23,7 +23,7 @@ HF_CACHE="$DATA_DIR/hf-cache"
 cd "$ROOT" || { echo "Không tìm thấy $ROOT. Rsync code trước."; exit 1; }
 
 echo "================================================"
-echo " VietByte AI API — deploy native"
+echo " AI API — deploy native"
 echo " Root: $ROOT"
 echo "================================================"
 

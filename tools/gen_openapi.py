@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Sinh OpenAPI 3.0.3 spec cho VBK OCR API — phục vụ upload lên RapidAPI marketplace.
+"""Sinh OpenAPI 3.0.3 spec cho OCR API — phục vụ upload lên RapidAPI marketplace.
 
 Run:    python3 tools/gen_openapi.py
 Output:
@@ -658,7 +658,7 @@ def build_paths() -> dict:
 # ----------------------------------------------------------------------------
 def build_spec() -> dict:
     description = (
-        "**VBK OCR API** — production-grade OCR powered by **PaddleOCR PP-OCRv5** "
+        "**OCR API** — production-grade OCR powered by **PaddleOCR PP-OCRv5** "
         "and **manga-ocr** (kha-white) for Japanese comics.\n\n"
         "## Highlights\n"
         "- 110 language codes across 12 script families (Latin, CJK, Cyrillic, Arabic, Devanagari, Thai, Greek, Tamil, Telugu, ...).\n"
@@ -676,12 +676,12 @@ def build_spec() -> dict:
     spec: dict = {
         "openapi": OPENAPI_VERSION,
         "info": {
-            "title": "VBK OCR API",
+            "title": "OCR API",
             "version": SPEC_VERSION,
             "description": description,
             "termsOfService": "https://ocr.spacecloud.fit/terms",
             "contact": {
-                "name": "VBK OCR Support",
+                "name": "OCR Support",
                 "url": "https://ocr.spacecloud.fit",
                 "email": "support@spacecloud.fit",
             },
@@ -689,7 +689,7 @@ def build_spec() -> dict:
             # x-logo là vendor extension để RapidAPI / ReDoc render logo card.
             "x-logo": {
                 "url": "https://ocr.spacecloud.fit/logo.png",
-                "altText": "VBK OCR API",
+                "altText": "OCR API",
             },
         },
         "servers": [

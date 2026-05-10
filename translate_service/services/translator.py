@@ -13,6 +13,7 @@ import asyncio
 import json
 import re
 from dataclasses import dataclass, field
+from functools import lru_cache
 
 import httpx
 from json_repair import repair_json
@@ -48,7 +49,6 @@ SCRIPT_PURITY_THRESHOLD = 0.85
 
 @dataclass
 class TranslationResult:
-    source_text: str
     translated_text: str
     detected_source_lang: str
     warnings: list[str] = field(default_factory=list)
@@ -58,76 +58,43 @@ def _lang_name(code: str) -> str:
     return LANG_NAMES.get(code, code)
 
 
-_CRITICAL_RULES = """
-CRITICAL RULES (must follow strictly):
-
-1. SCRIPT PURITY: output MUST be entirely in the target language's native script.
-   - Vietnamese (vi): only Latin letters + Vietnamese diacritics + numbers + punctuation. NO Chinese/Korean/Japanese characters.
-   - Chinese (zh, zh-TW): only Chinese characters + numbers + punctuation. NO Latin/Hangul/Kana mixed in.
-   - Japanese (ja): only kanji + hiragana + katakana + numbers + punctuation. NO Hangul.
-   - Korean (ko): only Hangul + occasional Hanja + numbers + punctuation. NO Kana.
-   - English (en) and other Latin languages: only Latin letters + diacritics + numbers + punctuation.
-   If you cannot translate cleanly into the target script, romanize as fallback.
-
-2. IDIOM HANDLING: never translate idioms literally. Translate by underlying meaning.
-   Examples:
-   - "playing with a full deck" → vi: "tỉnh táo, đầu óc bình thường"  (NOT "chơi với bộ bài đầy đủ")
-   - "kick the bucket" → vi: "qua đời, chết"  (NOT "đá cái xô")
-   - "break a leg" → vi: "chúc may mắn"  (NOT "gãy chân")
-   - "raining cats and dogs" → vi: "mưa như trút nước"  (NOT "mưa mèo chó")
-   If unsure whether a phrase is idiomatic, translate by meaning not by words.
-"""
+_CORE_RULES = (
+    "Rules:\n"
+    "- Output 100% in {target} native script (romanize foreign words if needed).\n"
+    "- Translate idioms by meaning, never literally.\n"
+    "- Preserve names, numbers, code, URLs, emails, HTML/MD tags, register."
+)
 
 
+@lru_cache(maxsize=256)
 def _build_system_prompt(source_lang: str, target_lang: str, retry: bool = False) -> str:
     """Prompt yêu cầu model detect (nếu auto) + translate + output JSON.
 
-    Khi source_lang=auto: model phải detect và trả lại ISO code 2 chữ.
-    Khi retry=True: thêm reminder mạnh về script purity (sau khi pass 1 fail).
+    Cache theo (source_lang, target_lang, retry) — prompt không đổi với cùng input.
     """
     target_name = _lang_name(target_lang)
-
-    retry_suffix = ""
-    if retry:
-        retry_suffix = (
-            f"\n\nIMPORTANT: previous attempt produced output with foreign characters mixed in. "
-            f"This time, output MUST be 100% in {target_name} script only. "
-            f"If you would output a foreign word, romanize it to {target_name} script instead."
-        )
+    rules = _CORE_RULES.format(target=target_name)
+    retry_line = (
+        f"\nNOTE: previous output mixed scripts — output MUST be 100% {target_name} script."
+        if retry
+        else ""
+    )
 
     if source_lang == "auto":
         return (
-            f"You are an elite translator. The user message may be in any language.\n\n"
-            f"Tasks:\n"
-            f"1. Detect the source language (ISO 639-1 code: vi/en/ja/zh/ko/fr/de/es/ru/th/id/pt/it/ar/hi/...).\n"
-            f"2. Translate the message to {target_name} (ISO code: {target_lang}).\n\n"
-            f"Rules:\n"
-            f"- Preserve proper nouns, brand names, numbers, code, URLs, emails, HTML/Markdown tags exactly.\n"
-            f"- Use natural, idiomatic phrasing in the target language (not literal word-by-word).\n"
-            f"- Match source register (formal/casual).\n"
-            f"- For Vietnamese output: preserve all diacritics correctly."
-            f"{_CRITICAL_RULES}\n"
-            f"Output ONLY a JSON object with EXACTLY 2 keys:\n"
-            f'{{"detected_lang": "<ISO 639-1>", "translation": "<translated text>"}}\n'
-            f"No markdown, no explanation, no surrounding text."
-            f"{retry_suffix}"
+            f"Translate the message to {target_name} ({target_lang}). "
+            f"Detect source language as ISO 639-1.\n"
+            f"{rules}\n"
+            f'Output JSON only: {{"detected_lang":"<ISO>","translation":"<text>"}}'
+            f"{retry_line}"
         )
 
     source_name = _lang_name(source_lang)
     return (
-        f"You are an elite {source_name}-{target_name} translator.\n\n"
-        f"Task: translate the user message from {source_name} ({source_lang}) "
-        f"to {target_name} ({target_lang}).\n\n"
-        f"Rules:\n"
-        f"- Preserve proper nouns, brand names, numbers, code, URLs, emails, HTML/Markdown tags exactly.\n"
-        f"- Use natural, idiomatic phrasing in {target_name}.\n"
-        f"- Match source register (formal/casual).\n"
-        f"- For Vietnamese: preserve all diacritics correctly."
-        f"{_CRITICAL_RULES}\n"
-        f"Output ONLY a JSON object with EXACTLY 1 key:\n"
-        f'{{"translation": "<translated text>"}}\n'
-        f"No markdown, no explanation, no surrounding text."
-        f"{retry_suffix}"
+        f"Translate from {source_name} ({source_lang}) to {target_name} ({target_lang}).\n"
+        f"{rules}\n"
+        f'Output JSON only: {{"translation":"<text>"}}'
+        f"{retry_line}"
     )
 
 
@@ -144,6 +111,11 @@ _HANGUL_RE = re.compile(r"[가-힯ᄀ-ᇿ㄰-㆏]")
 _THAI_RE = re.compile(r"[฀-๿]")
 _ARABIC_RE = re.compile(r"[؀-ۿݐ-ݿࢠ-ࣿ]")
 _DEVANAGARI_RE = re.compile(r"[ऀ-ॿ]")
+_CYRILLIC_RE = re.compile(r"[Ѐ-ӿ]")
+# Japanese expected: CJK + hiragana + katakana
+_JA_EXPECTED_RE = re.compile("[\u3400-\u4DBF\u4E00-\u9FFF\uF900-\uFAFF\u3040-\u309F\u30A0-\u30FF\uFF66-\uFF9F]")
+# JSON markdown fence stripping
+_JSON_FENCE_RE = re.compile(r"^```(?:json)?\s*(.*?)\s*```$", re.DOTALL)
 
 
 def _check_script_purity(text: str, target_lang: str) -> tuple[bool, float, str]:
@@ -175,11 +147,7 @@ def _check_script_purity(text: str, target_lang: str) -> tuple[bool, float, str]
             ("Thai", _THAI_RE),
         ]
     elif target_lang == "ja":
-        # Japanese ok với CJK + hiragana + katakana
-        merged = re.compile(
-            r"[㐀-䶿一-鿿豈-﫿぀-ゟ゠-ヿｦ-ﾟ]"
-        )
-        expected_re = merged
+        expected_re = _JA_EXPECTED_RE
         foreign_res = [
             ("Hangul", _HANGUL_RE),
             ("Arabic", _ARABIC_RE),
@@ -204,7 +172,7 @@ def _check_script_purity(text: str, target_lang: str) -> tuple[bool, float, str]
         expected_re = _DEVANAGARI_RE
         foreign_res = [("CJK", _CJK_RE), ("Hangul", _HANGUL_RE), ("Arabic", _ARABIC_RE)]
     elif target_lang == "ru":
-        expected_re = re.compile(r"[Ѐ-ӿ]")  # Cyrillic
+        expected_re = _CYRILLIC_RE
         foreign_res = [("CJK", _CJK_RE), ("Hangul", _HANGUL_RE), ("Thai", _THAI_RE)]
     else:
         # Lang khác — không check, pass-through
@@ -248,7 +216,7 @@ def _parse_response(raw: str, source_lang: str) -> tuple[str, str]:
     cleaned = raw.strip()
 
     # Strip markdown code fence nếu có
-    fence = re.match(r"^```(?:json)?\s*(.*?)\s*```$", cleaned, re.DOTALL)
+    fence = _JSON_FENCE_RE.match(cleaned)
     if fence:
         cleaned = fence.group(1).strip()
 
@@ -296,6 +264,9 @@ async def _call_vllm_translate(
         ],
         "max_tokens": min(4096, max(256, len(text) * 4)),
         "temperature": 0.05,  # near-greedy, ổn định hơn 0.1
+        # vLLM/OpenAI guided JSON — model bị ép output JSON hợp lệ ngay,
+        # giảm parse-fail + json-repair fallback path.
+        "response_format": {"type": "json_object"},
         # Qwen3 default ON "thinking mode" → output có <think>...</think>
         # blocks, làm tăng latency + break JSON parse. Disable.
         # Field này yêu cầu vLLM 0.7+; với vLLM cũ sẽ bị ignore (silently).
@@ -365,7 +336,6 @@ async def translate_one(
                 warnings.append("retry_no_improvement")
 
     return TranslationResult(
-        source_text=text,
         translated_text=translated,
         detected_source_lang=detected,
         warnings=warnings,
@@ -378,12 +348,13 @@ async def translate_batch(
     texts: list[str],
     source_lang: str,
     target_lang: str,
-    max_concurrency: int = 8,
+    max_concurrency: int = 16,
 ) -> list[TranslationResult]:
     """Translate nhiều text song song. vLLM continuous batching tự gộp request.
 
-    Concurrency mặc định 8 — đủ tận dụng vLLM batch mà không quá tải httpx pool
-    khi nhiều client gửi cùng lúc (100 client × 8 = 800 vLLM call cùng lúc).
+    Concurrency 16 — vLLM continuous batching gom request đồng thời thành 1
+    forward pass GPU, concurrency cao hơn → batch GPU lớn hơn → throughput tăng.
+    Pool httpx 200 connection (xem VllmEndpoint) đủ buffer cho ~12 concurrent client.
     Nếu 1 text fail → trả TranslationResult với warnings, không fail toàn batch.
     """
     sem = asyncio.Semaphore(max_concurrency)
@@ -402,7 +373,6 @@ async def translate_batch(
                 err_msg = str(exc) or err_kind
                 log.warning("translate_batch_item_failed", error=err_msg, kind=err_kind, text_len=len(t))
                 return TranslationResult(
-                    source_text=t,
                     translated_text="",
                     detected_source_lang=source_lang if source_lang != "auto" else "unknown",
                     warnings=[f"item_failed: {err_kind}: {err_msg}"[:200]],
